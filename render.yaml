@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: portalx
+    runtime: docker
+    dockerfilePath: ./site/Dockerfile
+    dockerContext: ./site
+    plan: free
+    healthCheckPath: /login
+    envVars:
+      - key: PORT
+        value: 10000
