@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>PortalX — Session Expired</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; background: #c8c8c8; margin: 0; font-size: 13px; }
+    .header { background: #003366; color: white; padding: 8px 16px; font-size: 15px; font-weight: bold; }
+    .container { width: 440px; margin: 80px auto; background: white; border: 1px solid #999; box-shadow: 2px 2px 6px rgba(0,0,0,0.3); }
+    .warn-header { background: #b07000; color: white; padding: 10px 16px; font-size: 13px; font-weight: bold; }
+    .body { padding: 20px 24px; font-size: 12px; color: #333; line-height: 1.7; }
+    .btn-login { background: #2c5f9e; color: white; border: 1px solid #1a4a80; padding: 6px 18px; font-size: 12px; cursor: pointer; margin-top: 14px; }
+  </style>
+</head>
+<body>
+  <div class="header">PortalX CGS Prior Authorization Portal</div>
+  <div class="container">
+    <div class="warn-header">Session Expired</div>
+    <div class="body">
+      <p>
+        Your session has expired due to inactivity or an invalid session token.
+        For security purposes, sessions automatically expire after 5 minutes of inactivity.
+      </p>
+      <p>Please log in again to continue.</p>
+      <button class="btn-login" onclick="window.location='/login'">Return to Login</button>
+    </div>
+  </div>
+</body>
+</html>

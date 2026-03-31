@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>PortalX — Sign In</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; background: #c8c8c8; margin: 0; font-size: 13px; }
+    .header { background: #003366; color: white; padding: 8px 16px; font-size: 15px; font-weight: bold; letter-spacing: 1px; }
+    .header span { font-size: 11px; font-weight: normal; display: block; color: #aaccff; }
+    .container { width: 420px; margin: 60px auto; background: white; border: 1px solid #999; box-shadow: 2px 2px 6px rgba(0,0,0,0.3); }
+    .form-header { background: #e8edf2; border-bottom: 1px solid #bbb; padding: 10px 16px; font-size: 13px; font-weight: bold; color: #003366; }
+    .form-body { padding: 20px 24px; }
+    table { width: 100%; border-collapse: collapse; }
+    td { padding: 6px 4px; vertical-align: middle; }
+    td:first-child { width: 130px; color: #333; font-weight: bold; font-size: 12px; text-align: right; padding-right: 10px; }
+    input[type=text], input[type=password] {
+      width: 200px; padding: 4px 6px; border: 1px solid #aaa;
+      font-size: 12px; background: #fffef8;
+    }
+    input[type=text]:focus, input[type=password]:focus { outline: 1px solid #336699; border-color: #336699; }
+    .btn-login {
+      background: linear-gradient(to bottom, #4a7ab5, #2c5f9e);
+      color: white; border: 1px solid #1a4a80; padding: 5px 18px;
+      font-size: 12px; cursor: pointer; margin-top: 10px;
+    }
+    .btn-login:hover { background: linear-gradient(to bottom, #5588c8, #3a6db0); }
+    .error-box {
+      background: #fff0f0; border: 1px solid #cc0000; color: #cc0000;
+      padding: 8px 12px; font-size: 12px; margin-bottom: 12px;
+    }
+    .hint { font-size: 10px; color: #888; margin-top: 14px; border-top: 1px dashed #ddd; padding-top: 8px; }
+    .footer { background: #e8edf2; border-top: 1px solid #bbb; padding: 6px 16px; font-size: 10px; color: #666; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    PortalX CGS Prior Authorization Portal
+    <span>Jurisdiction C — Medicare Administrative Contractor</span>
+  </div>
+
+  <div class="container">
+    <div class="form-header">Provider Login</div>
+    <div class="form-body">
+      <div id="login-error" class="error-box" style="display:none">
+        Invalid username or password. Please verify your credentials and try again.
+      </div>
+      <form method="POST" action="/login">
+        <table>
+          <tr>
+            <td>User ID:</td>
+            <td><input type="text" name="Username" id="Username" maxlength="50" autocomplete="off"></td>
+          </tr>
+          <tr>
+            <td>Password:</td>
+            <td><input type="password" name="Password" id="Password" maxlength="50"></td>
+          </tr>
+          <tr>
+            <td></td>
+            <td><button type="submit" class="btn-login" id="login-btn">Login</button></td>
+          </tr>
+        </table>
+      </form>
+      <div class="hint">
+        For system access issues contact the CGS EDI Help Desk: 1-866-590-6703<br>
+        <strong>Test credentials:</strong> admin / P@ssw0rd!
+      </div>
+    </div>
+    <div class="footer">
+      © 2024 CGS Administrators, LLC. All rights reserved. | Privacy Policy | Terms of Use
+    </div>
+  </div>
+</body>
+</html>

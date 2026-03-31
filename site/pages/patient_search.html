@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>PortalX — Beneficiary Search</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; background: #c8c8c8; margin: 0; font-size: 13px; }
+    .header { background: #003366; color: white; padding: 8px 16px; font-size: 15px; font-weight: bold; }
+    .header span { font-size: 11px; font-weight: normal; display: block; color: #aaccff; }
+    .topbar { background: #336699; padding: 4px 16px; color: #cce; font-size: 11px; display: flex; justify-content: space-between; }
+    .container { width: 780px; margin: 30px auto; background: white; border: 1px solid #999; box-shadow: 2px 2px 6px rgba(0,0,0,0.3); }
+    .panel-header { background: #e8edf2; border-bottom: 1px solid #bbb; padding: 8px 16px; font-size: 12px; font-weight: bold; color: #003366; }
+    .search-section { padding: 14px 18px; border-bottom: 1px solid #e0e0e0; }
+    .search-section table { border-collapse: collapse; }
+    .search-section td { padding: 5px 8px; vertical-align: middle; font-size: 12px; }
+    .search-section td:first-child { font-weight: bold; width: 110px; text-align: right; color: #444; }
+    /* ASP.NET-style inputs — matches Brightree's #LastName, #FirstName, #DateOfBirth */
+    #LastName, #FirstName, #DateOfBirth {
+      width: 160px; padding: 3px 5px; border: 1px solid #999;
+      font-size: 12px; background: #fffef8;
+    }
+    #LastName:focus, #FirstName:focus, #DateOfBirth:focus { outline: 1px solid #336699; }
+    .btn-search {
+      background: linear-gradient(to bottom, #4a7ab5, #2c5f9e);
+      color: white; border: 1px solid #1a4a80; padding: 4px 16px; font-size: 12px; cursor: pointer;
+    }
+    .btn-clear { background: #e0e0e0; border: 1px solid #aaa; padding: 4px 12px; font-size: 12px; cursor: pointer; margin-left: 4px; }
+
+    /* Results table — Brightree-style with match score column */
+    .results-section { padding: 14px 18px; }
+    .results-label { font-size: 12px; font-weight: bold; color: #003366; margin-bottom: 8px; }
+    #results-table { display: none; }
+    .results-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .results-table thead tr { background: #336699; color: white; }
+    .results-table th { padding: 6px 10px; text-align: left; font-size: 11px; }
+    .results-table tbody tr { border-bottom: 1px solid #ddd; cursor: pointer; }
+    .results-table tbody tr:hover { background: #eef4ff; }
+    .results-table tbody tr.selected-row { background: #ddeeff; }
+    .results-table td { padding: 7px 10px; }
+    /* Column 6 = match score (td:nth-of-type(6)) — the column targeted by automation's iterate() */
+    .results-table td:nth-of-type(6) { font-weight: bold; text-align: center; }
+    .score-high { color: #2a7a2a; }
+    .score-med  { color: #b07000; }
+    .score-low  { color: #888; }
+
+    .btn-select {
+      background: #2c5f9e; color: white; border: none; padding: 3px 10px;
+      font-size: 11px; cursor: pointer;
+    }
+    .no-results { color: #888; font-size: 12px; padding: 12px 0; }
+    .loading { color: #336699; font-size: 12px; padding: 8px 0; display: none; }
+    .btn-proceed {
+      background: linear-gradient(to bottom, #3a7a3a, #2a5e2a);
+      color: white; border: 1px solid #1a4a1a; padding: 6px 22px;
+      font-size: 12px; cursor: pointer; margin-top: 14px; display: none;
+    }
+
+    /* Server error injection */
+    .modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 1000; align-items: center; justify-content: center; }
+    .modal-backdrop.active { display: flex; }
+    .modal-box { background: white; border: 1px solid #999; width: 360px; box-shadow: 3px 3px 10px rgba(0,0,0,0.4); }
+    .modal-title { background: #8b0000; color: white; padding: 6px 12px; font-size: 12px; font-weight: bold; }
+    .modal-body { padding: 16px 14px; font-size: 12px; color: #333; font-family: monospace; }
+    .modal-footer { padding: 8px 14px; text-align: right; border-top: 1px solid #ddd; background: #f5f5f5; }
+    .modal-ok { background: #2c5f9e; color: white; border: 1px solid #1a4a80; padding: 4px 16px; font-size: 12px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    PortalX CGS Prior Authorization Portal
+    <span>Jurisdiction C — Beneficiary Search</span>
+  </div>
+  <div class="topbar">
+    <span>Welcome, admin | Session: Active</span>
+    <span>NPI: 1234567890 — Dr. Morgan Lee</span>
+  </div>
+
+  <div class="container">
+    <div class="panel-header">Beneficiary / Patient Search</div>
+
+    <div class="search-section">
+      <form id="search-form" onsubmit="doSearch(event)">
+        <table>
+          <tr>
+            <td>Last Name:</td>
+            <td><input type="text" id="LastName" name="LastName" autocomplete="off"></td>
+            <td style="width:20px"></td>
+            <td style="font-weight:bold;width:100px;text-align:right;color:#444">First Name:</td>
+            <td><input type="text" id="FirstName" name="FirstName" autocomplete="off"></td>
+          </tr>
+          <tr>
+            <td>Date of Birth:</td>
+            <td><input type="text" id="DateOfBirth" name="DateOfBirth" placeholder="MM/DD/YYYY"></td>
+            <td></td>
+            <td></td>
+            <td>
+              <button type="submit" class="btn-search" id="search-btn">Search</button>
+              <button type="button" class="btn-clear" onclick="clearForm()">Clear</button>
+            </td>
+          </tr>
+        </table>
+      </form>
+    </div>
+
+    <div class="results-section">
+      <div class="results-label">Search Results</div>
+      <div class="loading" id="loading-indicator">Searching beneficiary records...</div>
+
+      <div id="results-table">
+        <!--
+          Table mirrors Brightree PatientIntakes result structure.
+          Column 6 (td:nth-of-type(6)) = match score — targeted by automation's iterate()
+          with operation "geq" value 99.
+        -->
+        <table class="results-table" id="pt-results">
+          <thead>
+            <tr>
+              <th>Select</th>
+              <th>Last Name</th>
+              <th>First Name</th>
+              <th>Date of Birth</th>
+              <th>Medicare ID</th>
+              <th>Match %</th><!-- Column 6 = match score -->
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="results-tbody">
+            <!-- Populated by JS after simulated API call -->
+          </tbody>
+        </table>
+      </div>
+
+      <div class="no-results" id="no-results" style="display:none">
+        No matching beneficiaries found. Please verify the search criteria and try again.
+      </div>
+
+      <form method="POST" action="/patient-search" id="proceed-form">
+        <button type="submit" class="btn-proceed" id="proceed-btn">
+          Continue with Selected Beneficiary
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- "An Error occurred" modal for error modal testing -->
+  <div class="modal-backdrop" id="error-modal">
+    <div class="modal-box">
+      <div class="modal-title">An Error Occurred</div>
+      <div class="modal-body" id="error-body">An unexpected error occurred. Please try again.</div>
+      <div class="modal-footer">
+        <button class="modal-ok" onclick="document.getElementById('error-modal').classList.remove('active')">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    var SERVER_ERROR = new URLSearchParams(window.location.search).get('server_error') === '1';
+
+    // Show server error as JS alert (mirrors Brightree's exact behavior)
+    if (SERVER_ERROR) {
+      window.addEventListener('load', function() {
+        setTimeout(function() {
+          alert('Server Error\nThe following error occurred:\nxmlHttp.status: 500\nPlease try your request again.');
+        }, 300);
+      });
+    }
+
+    var selectedPatientId = null;
+
+    function doSearch(e) {
+      e.preventDefault();
+      var last = document.getElementById('LastName').value.trim();
+      var first = document.getElementById('FirstName').value.trim();
+      if (!last && !first) return;
+
+      document.getElementById('loading-indicator').style.display = 'block';
+      document.getElementById('results-table').style.display = 'none';
+      document.getElementById('no-results').style.display = 'none';
+      document.getElementById('proceed-btn').style.display = 'none';
+
+      // Call API — automation can use wait_for_response on /api/patient-search
+      fetch('/api/patient-search?last=' + encodeURIComponent(last) + '&first=' + encodeURIComponent(first))
+        .then(r => r.json())
+        .then(function(data) {
+          document.getElementById('loading-indicator').style.display = 'none';
+
+          var items = data.items || [];
+          if (items.length === 0) {
+            document.getElementById('no-results').style.display = 'block';
+            return;
+          }
+
+          var tbody = document.getElementById('results-tbody');
+          tbody.innerHTML = '';
+          items.forEach(function(p) {
+            var scoreClass = p.matchScore >= 99 ? 'score-high' : p.matchScore >= 60 ? 'score-med' : 'score-low';
+            var row = document.createElement('tr');
+            row.setAttribute('data-id', p.id);
+            row.onclick = function() { selectRow(this, p.id); };
+            row.innerHTML =
+              '<td><button class="btn-select" onclick="selectRow(this.closest(\'tr\'),\'' + p.id + '\')">Select</button></td>' +
+              '<td>' + p.lastName + '</td>' +
+              '<td>' + p.firstName + '</td>' +
+              '<td>' + p.dob + '</td>' +
+              '<td style="font-family:monospace">1EG4-TE5-MK72</td>' +
+              '<td class="' + scoreClass + '">' + p.matchScore + '</td>' +
+              '<td style="color:#2a7a2a">Eligible</td>';
+            tbody.appendChild(row);
+          });
+
+          document.getElementById('results-table').style.display = 'block';
+        });
+    }
+
+    function selectRow(row, id) {
+      document.querySelectorAll('#results-tbody tr').forEach(r => r.classList.remove('selected-row'));
+      row.classList.add('selected-row');
+      selectedPatientId = id;
+      document.getElementById('proceed-btn').style.display = 'inline-block';
+    }
+
+    function clearForm() {
+      document.getElementById('LastName').value = '';
+      document.getElementById('FirstName').value = '';
+      document.getElementById('DateOfBirth').value = '';
+      document.getElementById('results-table').style.display = 'none';
+      document.getElementById('no-results').style.display = 'none';
+      document.getElementById('proceed-btn').style.display = 'none';
+    }
+  </script>
+</body>
+</html>

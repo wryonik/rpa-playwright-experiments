@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>PortalX — Concurrent Session Detected</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; background: #c8c8c8; margin: 0; font-size: 13px; }
+    .header { background: #003366; color: white; padding: 8px 16px; font-size: 15px; font-weight: bold; }
+    .container { width: 480px; margin: 80px auto; background: white; border: 1px solid #999; box-shadow: 2px 2px 6px rgba(0,0,0,0.3); }
+    .err-header { background: #8b0000; color: white; padding: 10px 16px; font-size: 13px; font-weight: bold; }
+    .body { padding: 20px 24px; font-size: 12px; color: #333; line-height: 1.7; }
+    .btn-retry { background: #2c5f9e; color: white; border: 1px solid #1a4a80; padding: 6px 18px; font-size: 12px; cursor: pointer; margin-top: 14px; }
+  </style>
+</head>
+<body>
+  <div class="header">PortalX CGS Prior Authorization Portal</div>
+  <div class="container">
+    <div class="err-header">Concurrent Session Detected</div>
+    <div class="body">
+      <p>
+        Your user account is currently active in another browser session.
+        Only one active session is permitted per user account at a time.
+      </p>
+      <p>
+        Please close all other browser windows and sessions, then try again.
+        If you believe this is an error, contact the CGS EDI Help Desk at 1-866-590-6703.
+      </p>
+      <p style="color:#8b0000;font-size:11px">
+        <strong>Error Code:</strong> CONCURRENT_SESSION_DETECTED<br>
+        <strong>Session ID:</strong> <span id="err-sid" style="font-family:monospace"></span>
+      </p>
+      <button class="btn-retry" onclick="window.location='/login'">Return to Login</button>
+    </div>
+  </div>
+  <script>
+    document.getElementById('err-sid').textContent =
+      Math.random().toString(36).substring(2,10).toUpperCase();
+  </script>
+</body>
+</html>

@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>PortalX — Multi-Factor Authentication</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; background: #c8c8c8; margin: 0; font-size: 13px; }
+    .header { background: #003366; color: white; padding: 8px 16px; font-size: 15px; font-weight: bold; letter-spacing: 1px; }
+    .header span { font-size: 11px; font-weight: normal; display: block; color: #aaccff; }
+    .container { width: 460px; margin: 60px auto; background: white; border: 1px solid #999; box-shadow: 2px 2px 6px rgba(0,0,0,0.3); }
+    .form-header { background: #e8edf2; border-bottom: 1px solid #bbb; padding: 10px 16px; font-size: 13px; font-weight: bold; color: #003366; }
+    .form-body { padding: 20px 24px; }
+    .mfa-desc { font-size: 12px; color: #444; margin-bottom: 16px; line-height: 1.6; background: #f5f8ff; border: 1px solid #c5d5ea; padding: 10px 12px; }
+    .mfa-label { font-size: 12px; font-weight: bold; color: #333; margin-bottom: 6px; }
+    #MFAEntryPanel { margin-top: 8px; }
+    /* Mirrors the exact selector BrightreeClient/MyCGS automation targets */
+    #MFAEntryPanel #txtMFACode {
+      font-size: 20px; letter-spacing: 10px; font-family: monospace;
+      width: 180px; padding: 8px 12px; border: 2px solid #aaa;
+      text-align: center; background: #fffef8;
+    }
+    #MFAEntryPanel #txtMFACode:focus { border-color: #336699; outline: none; }
+    .btn-submit {
+      background: linear-gradient(to bottom, #4a7ab5, #2c5f9e);
+      color: white; border: 1px solid #1a4a80; padding: 5px 18px;
+      font-size: 12px; cursor: pointer; margin-top: 14px; display: block;
+    }
+    .error-box {
+      background: #fff0f0; border: 1px solid #cc0000; color: #cc0000;
+      padding: 8px 12px; font-size: 12px; margin-bottom: 12px;
+    }
+    /* Error modal — mirrors "The data entered is incorrect" modal in MyCGS */
+    .modal-backdrop {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.55); z-index: 1000;
+      align-items: center; justify-content: center;
+    }
+    .modal-backdrop.active { display: flex; }
+    .modal-box {
+      background: white; border: 1px solid #999; width: 340px;
+      box-shadow: 3px 3px 10px rgba(0,0,0,0.4);
+    }
+    .modal-title { background: #003366; color: white; padding: 6px 12px; font-size: 12px; font-weight: bold; }
+    .modal-body { padding: 16px 14px; font-size: 12px; color: #333; }
+    .modal-footer { padding: 8px 14px; text-align: right; border-top: 1px solid #ddd; background: #f5f5f5; }
+    .modal-ok { background: #2c5f9e; color: white; border: 1px solid #1a4a80; padding: 4px 16px; font-size: 12px; cursor: pointer; }
+    .footer { background: #e8edf2; border-top: 1px solid #bbb; padding: 6px 16px; font-size: 10px; color: #666; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    PortalX CGS Prior Authorization Portal
+    <span>Jurisdiction C — Multi-Factor Authentication</span>
+  </div>
+
+  <div class="container">
+    <div class="form-header">Identity Verification Required</div>
+    <div class="form-body">
+      <div class="mfa-desc">
+        To protect your account, please enter the 6-digit verification code from your
+        authenticator application. Codes expire every 30 seconds.
+      </div>
+
+      <div id="mfa-error" class="error-box" style="display:none">
+        The data entered is incorrect. Please check your authenticator app and try again.
+      </div>
+
+      <!-- Exact ID structure targeted by MyCGS automation: #MFAEntryPanel #txtMFACode -->
+      <form method="POST" action="/mfa" id="mfa-form">
+        <div id="MFAEntryPanel">
+          <div class="mfa-label">Verification Code</div>
+          <input type="text"
+                 name="MFACode"
+                 id="txtMFACode"
+                 placeholder="_ _ _ _ _ _"
+                 maxlength="6"
+                 autocomplete="off">
+          <button type="submit" class="btn-submit" id="mfa-submit">Verify</button>
+        </div>
+      </form>
+
+      <!-- TOTP_HINT -->
+    </div>
+    <div class="footer">
+      © 2024 CGS Administrators, LLC. All rights reserved.
+    </div>
+  </div>
+
+  <!-- "Incorrect code" modal — appears if wrong code submitted via JS -->
+  <div class="modal-backdrop" id="mfa-modal">
+    <div class="modal-box">
+      <div class="modal-title">Authentication Error</div>
+      <div class="modal-body">The data entered is incorrect. Please verify your code and try again.</div>
+      <div class="modal-footer">
+        <button class="modal-ok" onclick="document.getElementById('mfa-modal').classList.remove('active')">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Show modal on wrong code (server sets error visible; JS shows modal too)
+    window.onload = function() {
+      if (document.getElementById('mfa-error').style.display !== 'none') {
+        document.getElementById('mfa-modal').classList.add('active');
+      }
+    };
+
+    // Prevent paste — forces character-by-character entry (like real MyCGS)
+    document.getElementById('txtMFACode').addEventListener('paste', function(e) {
+      e.preventDefault();
+    });
+  </script>
+</body>
+</html>

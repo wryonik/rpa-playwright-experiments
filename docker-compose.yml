@@ -1,0 +1,53 @@
+version: "3.9"
+
+# Isolated experiment stack — does NOT touch the main app services.
+# Run with: docker compose -f experiments/docker-compose.experiments.yml up
+
+services:
+
+  # ── Test site ──────────────────────────────────────────────────────────────
+  # Python HTTP server with session state, TOTP, multi-page flow, error injection.
+  # Replaces the old static nginx site.
+  portalx-site:
+    image: python:3.12-slim
+    container_name: exp_portalx_site
+    volumes:
+      - ./site:/site:ro
+    working_dir: /site
+    command: python server.py
+    environment:
+      - PORT=8888
+    ports:
+      - "8888:8888"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8888/login')"]
+      interval: 5s
+      timeout: 4s
+      retries: 8
+
+  # ── Experiment runner ──────────────────────────────────────────────────────
+  # Python container with Playwright + psutil installed.
+  # Mount the scripts directory and run any experiment.
+  exp-runner:
+    image: mcr.microsoft.com/playwright/python:v1.50.0-noble
+    container_name: exp_runner
+    working_dir: /experiments
+    volumes:
+      - ./scripts:/experiments
+    environment:
+      - SITE_URL=http://portalx-site:80
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      portalx-site:
+        condition: service_healthy
+    # Default: just tail so the container stays up and you can exec into it.
+    # Override the command to run a specific experiment.
+    command: tail -f /dev/null
+    # To run a specific experiment directly:
+    #   docker compose -f experiments/docker-compose.experiments.yml run --rm exp-runner python exp_concurrency.py
+    shm_size: "2gb"    # Chrome needs large /dev/shm to avoid crashes
+
+networks:
+  default:
+    name: exp_network

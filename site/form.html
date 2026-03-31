@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PortalX — Prior Auth Submission</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f0f2f5;
+      min-height: 100vh;
+    }
+    .navbar {
+      background: white;
+      border-bottom: 1px solid #e5e7eb;
+      padding: 12px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .logo { font-size: 18px; font-weight: 700; color: #1a56db; }
+    .user { font-size: 13px; color: #6b7280; }
+    .main { max-width: 760px; margin: 32px auto; padding: 0 16px; }
+    h2 { font-size: 18px; font-weight: 600; color: #111827; margin-bottom: 4px; }
+    .sub { font-size: 13px; color: #6b7280; margin-bottom: 24px; }
+
+    /* Section card */
+    .section {
+      background: white;
+      border-radius: 8px;
+      border: 1px solid #e5e7eb;
+      padding: 24px;
+      margin-bottom: 16px;
+    }
+    .section-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #374151;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 16px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #f3f4f6;
+    }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+    .field { display: flex; flex-direction: column; }
+    label { font-size: 12px; font-weight: 500; color: #6b7280; margin-bottom: 4px; }
+    input[type=text], input[type=date], input[type=tel], select, textarea {
+      padding: 8px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 5px;
+      font-size: 13px;
+      outline: none;
+      background: white;
+      transition: border-color 0.15s;
+    }
+    input:focus, select:focus, textarea:focus { border-color: #1a56db; }
+    textarea { resize: vertical; min-height: 70px; }
+
+    /* File upload */
+    .upload-area {
+      border: 2px dashed #d1d5db;
+      border-radius: 6px;
+      padding: 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .upload-area:hover { border-color: #1a56db; }
+    .upload-area input { display: none; }
+    .upload-label { font-size: 13px; color: #6b7280; }
+    .upload-label span { color: #1a56db; cursor: pointer; }
+    #file-name { font-size: 12px; color: #059669; margin-top: 6px; }
+
+    /* Buttons */
+    .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+    .btn-secondary {
+      padding: 9px 18px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 13px;
+      background: white;
+      cursor: pointer;
+      color: #374151;
+    }
+    .btn-primary {
+      padding: 9px 18px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      background: #1a56db;
+      color: white;
+      cursor: pointer;
+    }
+    .btn-primary:hover { background: #1e429f; }
+
+    /* Success banner */
+    #success-banner {
+      display: none;
+      background: #ecfdf5;
+      border: 1px solid #6ee7b7;
+      border-radius: 6px;
+      padding: 14px 18px;
+      margin-bottom: 16px;
+      color: #065f46;
+      font-size: 13px;
+    }
+
+    /* Popup overlay (custom modal) */
+    .overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    .overlay.active { display: flex; }
+    .modal {
+      background: white;
+      border-radius: 8px;
+      padding: 28px;
+      width: 380px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+    }
+    .modal h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+    .modal p { font-size: 13px; color: #6b7280; margin-bottom: 20px; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .modal-ok {
+      padding: 8px 20px;
+      background: #1a56db;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .modal-cancel {
+      padding: 8px 20px;
+      background: white;
+      color: #374151;
+      border: 1px solid #d1d5db;
+      border-radius: 5px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    /* Session warning */
+    #session-warning {
+      display: none;
+      position: fixed;
+      bottom: 16px;
+      right: 16px;
+      background: #fef3c7;
+      border: 1px solid #f59e0b;
+      border-radius: 6px;
+      padding: 12px 16px;
+      font-size: 12px;
+      color: #92400e;
+      z-index: 900;
+      max-width: 280px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="navbar">
+    <div class="logo">PortalX</div>
+    <div class="user" id="nav-user">Loading...</div>
+  </div>
+
+  <div class="main">
+    <h2>Prior Authorization Request</h2>
+    <div class="sub">Fill all required fields and upload supporting documentation.</div>
+
+    <div id="success-banner">
+      ✓ Authorization request submitted successfully. Reference ID: <strong id="ref-id"></strong>
+    </div>
+
+    <!-- Member Information -->
+    <div class="section">
+      <div class="section-title">Member Information</div>
+      <div class="grid-2">
+        <div class="field">
+          <label>First Name</label>
+          <input type="text" id="first-name" placeholder="John">
+        </div>
+        <div class="field">
+          <label>Last Name</label>
+          <input type="text" id="last-name" placeholder="Doe">
+        </div>
+        <div class="field">
+          <label>Date of Birth</label>
+          <input type="date" id="dob">
+        </div>
+        <div class="field">
+          <label>Member ID</label>
+          <input type="text" id="member-id" placeholder="MBR-000000">
+        </div>
+        <div class="field">
+          <label>Phone Number</label>
+          <input type="tel" id="phone" placeholder="(555) 000-0000">
+        </div>
+        <div class="field">
+          <label>Insurance Plan</label>
+          <select id="insurance-plan">
+            <option value="">Select plan...</option>
+            <option value="PPO_GOLD">PPO Gold</option>
+            <option value="HMO_SILVER">HMO Silver</option>
+            <option value="EPO_BRONZE">EPO Bronze</option>
+            <option value="HDHP">High Deductible</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Provider Information -->
+    <div class="section">
+      <div class="section-title">Ordering Provider</div>
+      <div class="grid-2">
+        <div class="field">
+          <label>Provider NPI</label>
+          <input type="text" id="npi" placeholder="1234567890">
+        </div>
+        <div class="field">
+          <label>Provider Name</label>
+          <input type="text" id="provider-name" placeholder="Dr. Jane Smith">
+        </div>
+        <div class="field">
+          <label>Specialty</label>
+          <select id="specialty">
+            <option value="">Select specialty...</option>
+            <option>Internal Medicine</option>
+            <option>Pulmonology</option>
+            <option>Cardiology</option>
+            <option>Orthopedics</option>
+            <option>Neurology</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Contact Phone</label>
+          <input type="tel" id="provider-phone" placeholder="(555) 000-0000">
+        </div>
+      </div>
+    </div>
+
+    <!-- Equipment & Diagnosis -->
+    <div class="section">
+      <div class="section-title">Equipment & Diagnosis</div>
+      <div class="grid-3">
+        <div class="field">
+          <label>HCPCS Code</label>
+          <input type="text" id="hcpcs" placeholder="E0601">
+        </div>
+        <div class="field">
+          <label>ICD-10 Code</label>
+          <input type="text" id="icd10" placeholder="J96.00">
+        </div>
+        <div class="field">
+          <label>Quantity</label>
+          <input type="text" id="quantity" placeholder="1">
+        </div>
+      </div>
+      <div class="field" style="margin-top: 16px;">
+        <label>Clinical Notes</label>
+        <textarea id="notes" placeholder="Describe clinical necessity..."></textarea>
+      </div>
+    </div>
+
+    <!-- Document Upload -->
+    <div class="section">
+      <div class="section-title">Supporting Documentation</div>
+      <div class="upload-area" onclick="document.getElementById('file-input').click()">
+        <input type="file" id="file-input" accept=".pdf,.png,.jpg" onchange="handleFileSelect(this)">
+        <div class="upload-label">Drop files here or <span>browse</span></div>
+        <div id="file-name"></div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn-secondary" onclick="clearForm()">Clear</button>
+      <button class="btn-primary" id="submit-btn" onclick="submitForm()">Submit Authorization</button>
+    </div>
+  </div>
+
+  <!-- Custom modal popup (simulates session warnings, server notices) -->
+  <div class="overlay" id="modal-overlay">
+    <div class="modal">
+      <h3 id="modal-title">Session Notice</h3>
+      <p id="modal-body">Your session will expire in 5 minutes. Please save your work.</p>
+      <div class="modal-actions">
+        <button class="modal-cancel" id="modal-cancel" onclick="closeModal()">Cancel</button>
+        <button class="modal-ok" id="modal-ok" onclick="closeModal()">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Session warning toast -->
+  <div id="session-warning">⚠ Session expiring soon. Click anywhere to stay logged in.</div>
+
+<script>
+  // ── Auth guard ──────────────────────────────────────────────────────────────
+  // Accept either sessionStorage (same-session login) or the persistent cookie
+  // (restored cookies from RPASession — the warm-start path).
+  function getCookie(name) {
+    const m = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+    return m ? m[2] : null;
+  }
+  const hasSession = sessionStorage.getItem('loggedIn') === 'true';
+  const hasCookie  = getCookie('portalx_session') === 'valid_session_abc123';
+  if (!hasSession && !hasCookie) {
+    window.location.href = '/login.html';
+  }
+  document.getElementById('nav-user').textContent =
+    'Signed in as: ' + (sessionStorage.getItem('username') || 'admin');
+
+  // ── File upload ─────────────────────────────────────────────────────────────
+  function handleFileSelect(input) {
+    const f = input.files[0];
+    document.getElementById('file-name').textContent = f ? '✓ ' + f.name : '';
+  }
+
+  // ── Form actions ────────────────────────────────────────────────────────────
+  function clearForm() {
+    ['first-name','last-name','member-id','phone','npi','provider-name',
+     'provider-phone','hcpcs','icd10','quantity','notes'].forEach(id => {
+      document.getElementById(id).value = '';
+    });
+    document.getElementById('dob').value = '';
+    document.getElementById('insurance-plan').selectedIndex = 0;
+    document.getElementById('specialty').selectedIndex = 0;
+    document.getElementById('file-name').textContent = '';
+    document.getElementById('success-banner').style.display = 'none';
+  }
+
+  function submitForm() {
+    const btn = document.getElementById('submit-btn');
+    btn.textContent = 'Submitting...';
+    btn.disabled = true;
+
+    // Simulate 800ms–2s processing delay
+    const delay = 800 + Math.random() * 1200;
+    setTimeout(() => {
+      // 10% chance of "server error" dialog — mirrors Brightree's real behavior
+      if (Math.random() < 0.1) {
+        alert('Server Error\nAn unexpected error occurred. Please try again.');
+        btn.textContent = 'Submit Authorization';
+        btn.disabled = false;
+        return;
+      }
+      const refId = 'PA-' + Math.random().toString(36).substr(2, 8).toUpperCase();
+      document.getElementById('ref-id').textContent = refId;
+      document.getElementById('success-banner').style.display = 'block';
+      btn.textContent = 'Submit Authorization';
+      btn.disabled = false;
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }, delay);
+  }
+
+  // ── Random popup engine ──────────────────────────────────────────────────────
+  // Each popup type is weighted. The scheduler fires one every 15–45 seconds.
+  const popups = [
+    // Native browser alert (hardest for automation to handle)
+    { weight: 2, trigger: () => alert('System Maintenance Notice\nScheduled maintenance begins at 11:00 PM EST. Please save your work.') },
+    // Native confirm dialog
+    { weight: 2, trigger: () => {
+        const ok = confirm('Your session will expire. Do you want to stay logged in?');
+        // No action needed — automation should click OK or Cancel
+      }
+    },
+    // Custom modal overlay
+    { weight: 3, trigger: () => showModal(
+        'Policy Update',
+        'Our authorization submission policies have been updated. Please review the changes before continuing.',
+        true // show cancel button
+      )
+    },
+    { weight: 2, trigger: () => showModal(
+        'Important Notice',
+        'Please verify all member information before submission. Incorrect data may result in delays.',
+        false // OK only
+      )
+    },
+    // Session expiry toast (non-blocking)
+    { weight: 3, trigger: () => {
+        document.getElementById('session-warning').style.display = 'block';
+        setTimeout(() => {
+          document.getElementById('session-warning').style.display = 'none';
+        }, 8000);
+      }
+    },
+  ];
+
+  function weightedRandom(items) {
+    const total = items.reduce((s, i) => s + i.weight, 0);
+    let r = Math.random() * total;
+    for (const item of items) {
+      r -= item.weight;
+      if (r <= 0) return item;
+    }
+    return items[items.length - 1];
+  }
+
+  function showModal(title, body, showCancel) {
+    document.getElementById('modal-title').textContent = title;
+    document.getElementById('modal-body').textContent = body;
+    document.getElementById('modal-cancel').style.display = showCancel ? 'inline-block' : 'none';
+    document.getElementById('modal-overlay').classList.add('active');
+  }
+
+  function closeModal() {
+    document.getElementById('modal-overlay').classList.remove('active');
+  }
+
+  // Dismiss modal if clicking outside
+  document.getElementById('modal-overlay').addEventListener('click', function(e) {
+    if (e.target === this) closeModal();
+  });
+
+  // Schedule popups: fires every 15–45 seconds at random
+  function scheduleNextPopup() {
+    const delay = (15 + Math.random() * 30) * 1000;
+    setTimeout(() => {
+      weightedRandom(popups).trigger();
+      scheduleNextPopup();
+    }, delay);
+  }
+
+  // Start popup engine after 10s so the page has time to load
+  setTimeout(scheduleNextPopup, 10000);
+</script>
+</body>
+</html>

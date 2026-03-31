@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>PortalX — Prior Authorization Request</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; background: #c8c8c8; margin: 0; font-size: 13px; }
+    .header { background: #003366; color: white; padding: 8px 16px; font-size: 15px; font-weight: bold; }
+    .header span { font-size: 11px; font-weight: normal; display: block; color: #aaccff; }
+    .topbar { background: #336699; padding: 4px 16px; color: #cce; font-size: 11px; display: flex; justify-content: space-between; }
+    .container { width: 820px; margin: 24px auto; background: white; border: 1px solid #999; box-shadow: 2px 2px 6px rgba(0,0,0,0.3); }
+    .panel-header { background: #e8edf2; border-bottom: 1px solid #bbb; padding: 8px 16px; font-size: 12px; font-weight: bold; color: #003366; }
+    .section { border-bottom: 1px solid #e0e0e0; padding: 14px 18px; }
+    .section-title { font-size: 11px; font-weight: bold; text-transform: uppercase; color: #555; letter-spacing: 0.05em; margin-bottom: 10px; padding-bottom: 5px; border-bottom: 1px dashed #ddd; }
+    .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 24px; }
+    .field-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px 16px; }
+    .field { display: flex; flex-direction: column; gap: 3px; }
+    .field label { font-size: 11px; font-weight: bold; color: #444; }
+    .field input[type=text], .field input[type=date], .field textarea {
+      padding: 4px 6px; border: 1px solid #aaa; font-size: 12px; background: #fffef8;
+    }
+    .field input:focus, .field textarea:focus { outline: 1px solid #336699; border-color: #336699; }
+    .field textarea { resize: vertical; min-height: 58px; font-family: Arial; }
+
+    /* ── Quick-lookup field (mirrors Brightree's data-quicklookup pattern) ── */
+    .quicklookup-wrapper { position: relative; }
+    .quicklookup-wrapper input[data-quicklookup] { width: 100%; }
+    /* The dropdown container matches PlaywrightAutomation's selector:
+       div.v-menu__content.menuable__content__active */
+    .v-menu__content.menuable__content__active {
+      display: none; position: absolute; top: 100%; left: 0; z-index: 500;
+      background: white; border: 1px solid #bbb; box-shadow: 2px 4px 10px rgba(0,0,0,0.2);
+      max-height: 180px; overflow-y: auto; min-width: 320px; width: max-content;
+    }
+    .v-menu__content.menuable__content__active.open { display: block; }
+    /* Items: div.quicklookup-data.v-list-item.v-list-item--link */
+    .quicklookup-data.v-list-item.v-list-item--link {
+      padding: 8px 12px; cursor: pointer; font-size: 12px; border-bottom: 1px solid #f0f0f0;
+    }
+    .quicklookup-data.v-list-item.v-list-item--link:hover { background: #eef4ff; }
+    .quicklookup-data.v-list-item.v-list-item--link .npi-sub { font-size: 10px; color: #888; }
+
+    /* ── Vuetify v-select (HCPCS code dropdown) ── */
+    /* Wrapper — PlaywrightAutomation detects: role=combobox OR .v-select class */
+    .v-select {
+      position: relative; border: 1px solid #aaa; background: #fffef8;
+      display: flex; align-items: center; min-height: 29px; cursor: pointer;
+      padding: 0 4px;
+    }
+    .v-select:focus-within { border-color: #336699; }
+    .v-select__slot { flex: 1; display: flex; align-items: center; padding: 0 4px; }
+    .v-select__slot input {
+      border: none; background: transparent; font-size: 12px; width: 100%;
+      outline: none; padding: 4px 0; cursor: pointer;
+    }
+    /* Arrow icon: i.material-icons with text 'arrow_drop_down'
+       Targeted by: i.material-icons:has-text('arrow_drop_down') */
+    .v-input__append-inner { padding: 0 4px; }
+    .material-icons { font-family: 'Material Icons', serif; font-size: 18px; color: #666; user-select: none; }
+    /* Listbox: div[role='listbox']:visible */
+    .v-select-dropdown {
+      display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 500;
+      background: white; border: 1px solid #bbb; box-shadow: 2px 4px 10px rgba(0,0,0,0.2);
+      max-height: 200px; overflow-y: auto;
+    }
+    .v-select-dropdown.open { display: block; }
+    /* Items: .v-list-item__title */
+    .v-list-item { padding: 0; }
+    .v-list-item__title { padding: 8px 12px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #f0f0f0; }
+    .v-list-item__title:hover { background: #eef4ff; }
+    .v-list-item__title .code { font-family: monospace; font-weight: bold; color: #003366; }
+    .v-list-item__title .desc { color: #555; margin-left: 8px; }
+
+    /* Upload */
+    .upload-area {
+      border: 2px dashed #bbb; padding: 16px; text-align: center;
+      cursor: pointer; font-size: 12px; color: #666;
+    }
+    .upload-area:hover { border-color: #336699; color: #336699; }
+    #file-input { display: none; }
+    #file-name { font-size: 11px; color: #2a7a2a; margin-top: 4px; }
+
+    /* Buttons */
+    .btn-submit {
+      background: linear-gradient(to bottom, #3a7a3a, #2a5e2a);
+      color: white; border: 1px solid #1a4a1a; padding: 7px 28px;
+      font-size: 13px; cursor: pointer; margin: 16px 18px;
+    }
+    .btn-cancel { background: #e0e0e0; border: 1px solid #aaa; padding: 7px 18px; font-size: 13px; cursor: pointer; margin-right: 8px; }
+
+    /* Modals */
+    .modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 1000; align-items: center; justify-content: center; }
+    .modal-backdrop.active { display: flex; }
+    .modal-box { background: white; border: 1px solid #999; width: 380px; box-shadow: 3px 3px 10px rgba(0,0,0,0.4); }
+    .modal-title-err { background: #8b0000; color: white; padding: 6px 12px; font-size: 12px; font-weight: bold; }
+    .modal-title-ok  { background: #003366; color: white; padding: 6px 12px; font-size: 12px; font-weight: bold; }
+    .modal-body { padding: 16px 14px; font-size: 12px; color: #333; line-height: 1.6; }
+    .modal-footer { padding: 8px 14px; text-align: right; border-top: 1px solid #ddd; background: #f5f5f5; }
+    .modal-ok { background: #2c5f9e; color: white; border: 1px solid #1a4a80; padding: 4px 16px; font-size: 12px; cursor: pointer; }
+    .modal-cancel { background: #e0e0e0; border: 1px solid #aaa; padding: 4px 12px; font-size: 12px; cursor: pointer; margin-right: 6px; }
+  </style>
+  <!-- Material Icons (for arrow_drop_down) -->
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+</head>
+<body>
+  <div class="header">
+    PortalX CGS Prior Authorization Portal
+    <span>Jurisdiction C — Prior Authorization Request Submission</span>
+  </div>
+  <div class="topbar">
+    <span>Welcome, admin | Session: Active | NPI: 1234567890</span>
+    <span>Beneficiary: Rivera, Alex | DOB: 06/15/1985</span>
+  </div>
+
+  <div class="container">
+    <div class="panel-header">New Prior Authorization Request — Complete All Required Sections</div>
+
+    <form method="POST" action="/prior-auth" id="pa-form">
+
+      <!-- Section 1: Contact Details -->
+      <div class="section">
+        <div class="section-title">Contact Information</div>
+        <div class="field-grid">
+          <div class="field">
+            <label>Contact Name *</label>
+            <input type="text" id="contact_name" name="contact_name" placeholder="Enter contact name">
+          </div>
+          <div class="field">
+            <label>Contact Phone *</label>
+            <input type="text" id="contact_number" name="contact_number" placeholder="(555) 000-0000">
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 2: Beneficiary -->
+      <div class="section">
+        <div class="section-title">Beneficiary Information</div>
+        <div class="field-grid">
+          <div class="field">
+            <label>Medicare ID / HICN *</label>
+            <input type="text" id="insurance_id" name="insurance_id" placeholder="1EG4-TE5-MK72">
+          </div>
+          <div class="field">
+            <label>Last Name *</label>
+            <input type="text" id="ben_last_name" name="ben_last_name" placeholder="Rivera">
+          </div>
+          <div class="field">
+            <label>First Name *</label>
+            <input type="text" id="ben_first_name" name="ben_first_name" placeholder="Alex">
+          </div>
+          <div class="field">
+            <label>Date of Birth *</label>
+            <input type="text" id="date_of_birth" name="date_of_birth" placeholder="MM/DD/YYYY">
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 3: Ordering Provider (Quick-lookup) -->
+      <div class="section">
+        <div class="section-title">Ordering Provider</div>
+        <div class="field-grid">
+          <div class="field">
+            <label>Provider NPI (Quick Lookup) *</label>
+            <div class="quicklookup-wrapper">
+              <!--
+                input has data-quicklookup attribute — detected by PlaywrightAutomation.fill()
+                ID also contains "quicklookup" as secondary detection
+              -->
+              <input type="text"
+                     id="provider_npi_quicklookup"
+                     name="provider_npi"
+                     data-quicklookup="npi"
+                     placeholder="Type NPI or provider name..."
+                     autocomplete="off"
+                     oninput="npiLookup(this.value)">
+              <!-- Container: div.v-menu__content.menuable__content__active -->
+              <div class="v-menu__content menuable__content__active" id="npi-dropdown">
+                <!-- Items: div.quicklookup-data.v-list-item.v-list-item--link -->
+                <div class="quicklookup-data v-list-item v-list-item--link" onclick="selectNpi('1234567890','Dr. Morgan Lee, MD')">
+                  1234567890 — Dr. Morgan Lee, MD
+                  <div class="npi-sub">Pulmonology | Active</div>
+                </div>
+                <div class="quicklookup-data v-list-item v-list-item--link" onclick="selectNpi('0987654321','Dr. Casey Torres, DO')">
+                  0987654321 — Dr. Casey Torres, DO
+                  <div class="npi-sub">Internal Medicine | Active</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="field">
+            <label>Provider Name</label>
+            <input type="text" id="provider_name" name="provider_name" placeholder="Auto-filled on NPI selection" readonly style="background:#f0f0f0">
+          </div>
+          <div class="field">
+            <label>Submission Type *</label>
+            <select id="submission_type" name="submission_type" style="padding:4px 6px;border:1px solid #aaa;font-size:12px;background:#fffef8">
+              <option value="">-- Select --</option>
+              <option value="initial">Initial Request</option>
+              <option value="reconsideration">Reconsideration</option>
+              <option value="appeal">Appeal</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 4: Equipment / HCPCS (Vuetify v-select) -->
+      <div class="section">
+        <div class="section-title">Equipment &amp; Diagnosis</div>
+        <div class="field-grid-3">
+          <div class="field" style="grid-column: span 2;">
+            <label>HCPCS Code (Equipment) *</label>
+            <!--
+              Vuetify v-select structure — exact classes targeted by PlaywrightAutomation:
+              - Wrapper: .v-select (or role=combobox)
+              - Arrow: i.material-icons with text 'arrow_drop_down'
+              - Dropdown: div[role='listbox']:visible
+              - Items: .v-list-item__title
+            -->
+            <div class="v-select" id="hcpcs-select-wrapper" tabindex="0">
+              <div class="v-select__slot">
+                <input type="text" id="hcpcs_display" placeholder="Select HCPCS code..." readonly style="cursor:pointer">
+                <input type="hidden" id="hcpcs_code" name="hcpcs_code">
+              </div>
+              <div class="v-input__append-inner" onclick="toggleHcpcsDropdown()">
+                <i class="material-icons">arrow_drop_down</i>
+              </div>
+              <!--
+                div[role='listbox']:visible — exact selector for dropdown visibility check
+                Items paginated: first 3 shown, ArrowDown loads more (up to 7 total)
+              -->
+              <div role="listbox" class="v-select-dropdown" id="hcpcs-listbox">
+                <!-- First page of items (3) -->
+                <div class="v-list-item" data-code="E0601">
+                  <div class="v-list-item__title"><span class="code">E0601</span><span class="desc">Continuous Positive Airway Pressure (CPAP) Device</span></div>
+                </div>
+                <div class="v-list-item" data-code="E0470">
+                  <div class="v-list-item__title"><span class="code">E0470</span><span class="desc">Respiratory Assist Device, BiPAP</span></div>
+                </div>
+                <div class="v-list-item" data-code="E0435">
+                  <div class="v-list-item__title"><span class="code">E0435</span><span class="desc">Portable Liquid Oxygen System</span></div>
+                </div>
+                <!-- Additional items (revealed by ArrowDown key presses) -->
+                <div class="v-list-item" data-code="E1390" style="display:none">
+                  <div class="v-list-item__title"><span class="code">E1390</span><span class="desc">Oxygen Concentrator, Single Delivery Port</span></div>
+                </div>
+                <div class="v-list-item" data-code="K0001" style="display:none">
+                  <div class="v-list-item__title"><span class="code">K0001</span><span class="desc">Standard Wheelchair</span></div>
+                </div>
+                <div class="v-list-item" data-code="K0005" style="display:none">
+                  <div class="v-list-item__title"><span class="code">K0005</span><span class="desc">Ultralightweight Wheelchair</span></div>
+                </div>
+                <div class="v-list-item" data-code="K0010" style="display:none">
+                  <div class="v-list-item__title"><span class="code">K0010</span><span class="desc">Standard-Weight Frame Power Wheelchair</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>ICD-10 Diagnosis Code *</label>
+            <input type="text" id="icd10_code" name="icd10_code" placeholder="e.g. J96.00">
+          </div>
+          <div class="field">
+            <label>Height (inches)</label>
+            <input type="text" id="height" name="height" placeholder="e.g. 70">
+          </div>
+          <div class="field">
+            <label>Weight (lbs)</label>
+            <input type="text" id="weight" name="weight" placeholder="e.g. 185">
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 5: Documentation Upload -->
+      <div class="section">
+        <div class="section-title">Supporting Documentation</div>
+        <div class="upload-area" onclick="document.getElementById('file-input').click()">
+          <input type="file" id="file-input" name="documents" accept=".pdf,.png,.jpg" onchange="showFileName(this)">
+          <div>Click to upload or drag and drop</div>
+          <div style="font-size:10px;color:#aaa;margin-top:4px">PDF, PNG, JPG — Max 25 MB</div>
+        </div>
+        <div id="file-name"></div>
+      </div>
+
+      <!-- Section 6: Additional Notes -->
+      <div class="section">
+        <div class="section-title">Clinical Notes</div>
+        <div class="field">
+          <textarea id="clinical_notes" name="clinical_notes" placeholder="Describe clinical necessity and supporting evidence..."></textarea>
+        </div>
+      </div>
+
+      <div style="padding:4px 18px;display:flex;justify-content:flex-end">
+        <button type="button" class="btn-cancel" onclick="window.history.back()">Cancel</button>
+        <button type="button" class="btn-submit" id="submit-btn" onclick="confirmSubmit()">Submit Authorization Request</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- "An Error occurred" modal (8% server-injected) -->
+  <div class="modal-backdrop" id="error-modal">
+    <div class="modal-box">
+      <div class="modal-title-err">An Error Occurred</div>
+      <div class="modal-body">
+        An unexpected error occurred while loading the authorization form.<br>
+        Please click OK to retry.
+      </div>
+      <div class="modal-footer">
+        <button class="modal-ok" id="error-modal-ok" onclick="document.getElementById('error-modal').classList.remove('active')">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Submission confirmation modal -->
+  <div class="modal-backdrop" id="confirm-modal">
+    <div class="modal-box">
+      <div class="modal-title-ok">Confirm Submission</div>
+      <div class="modal-body">
+        You are about to submit a prior authorization request.<br><br>
+        Please verify all information is accurate before proceeding.
+        Submissions cannot be edited once submitted.
+      </div>
+      <div class="modal-footer">
+        <button class="modal-cancel" onclick="document.getElementById('confirm-modal').classList.remove('active')">Cancel</button>
+        <button class="modal-ok" id="confirm-ok-btn" onclick="doSubmit()">Submit</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ── Server error injection ───────────────────────────────────────────────
+    var SERVER_ERROR_ON_SUBMIT = new URLSearchParams(window.location.search).get('server_error') === '1';
+    if (SERVER_ERROR_ON_SUBMIT) {
+      window.addEventListener('load', function() {
+        setTimeout(function() {
+          alert('Server Error\nThe following error occurred:\nxmlHttp.status: 500\nYour request could not be processed.');
+        }, 300);
+      });
+    }
+
+    // Server-injected "An Error occurred" modal on page load
+    var INJECT_ERROR_MODAL = false; // replaced by server: INJECT_ERROR_MODAL=0
+    if ("INJECT_ERROR_MODAL=0".split("=")[1] === "1") {
+      window.addEventListener('load', function() {
+        setTimeout(function() {
+          document.getElementById('error-modal').classList.add('active');
+        }, 500);
+      });
+    }
+
+    // ── Quick-lookup (NPI) ───────────────────────────────────────────────────
+    var npiTimeout;
+    function npiLookup(val) {
+      clearTimeout(npiTimeout);
+      var dd = document.getElementById('npi-dropdown');
+      if (!val || val.length < 3) { dd.classList.remove('open'); return; }
+      npiTimeout = setTimeout(function() {
+        // Show dropdown after short delay
+        dd.classList.add('open');
+      }, 300);
+    }
+
+    function selectNpi(npi, name) {
+      document.getElementById('provider_npi_quicklookup').value = npi;
+      document.getElementById('provider_name').value = name;
+      document.getElementById('npi-dropdown').classList.remove('open');
+    }
+
+    // Close NPI dropdown on outside click
+    document.addEventListener('click', function(e) {
+      if (!e.target.closest('.quicklookup-wrapper')) {
+        document.getElementById('npi-dropdown').classList.remove('open');
+      }
+    });
+
+    // ── Vuetify v-select (HCPCS) ────────────────────────────────────────────
+    var hcpcsVisible = 3; // initially show 3 items
+
+    function toggleHcpcsDropdown() {
+      var lb = document.getElementById('hcpcs-listbox');
+      lb.classList.toggle('open');
+    }
+
+    // Click on v-list-item__title to select
+    document.querySelectorAll('#hcpcs-listbox .v-list-item__title').forEach(function(el) {
+      el.addEventListener('click', function() {
+        var item = this.closest('.v-list-item');
+        var code = item.getAttribute('data-code');
+        var desc = this.querySelector('.desc').textContent;
+        document.getElementById('hcpcs_display').value = code + ' — ' + desc;
+        document.getElementById('hcpcs_code').value = code;
+        document.getElementById('hcpcs-listbox').classList.remove('open');
+      });
+    });
+
+    // ArrowDown key presses reveal more items (mirrors Playwright's ArrowDown pagination)
+    document.getElementById('hcpcs-select-wrapper').addEventListener('keydown', function(e) {
+      if (e.key === 'ArrowDown') {
+        var allItems = document.querySelectorAll('#hcpcs-listbox .v-list-item');
+        if (hcpcsVisible < allItems.length) {
+          allItems[hcpcsVisible].style.display = '';
+          hcpcsVisible++;
+        }
+      }
+    });
+
+    // Open dropdown when wrapper is focused/clicked
+    document.getElementById('hcpcs-select-wrapper').addEventListener('click', function() {
+      document.getElementById('hcpcs-listbox').classList.add('open');
+    });
+
+    // Close on outside click
+    document.addEventListener('click', function(e) {
+      if (!e.target.closest('#hcpcs-select-wrapper')) {
+        document.getElementById('hcpcs-listbox').classList.remove('open');
+      }
+    });
+
+    // ── File upload ──────────────────────────────────────────────────────────
+    function showFileName(input) {
+      var f = input.files[0];
+      document.getElementById('file-name').textContent = f ? '✓ ' + f.name : '';
+    }
+
+    // ── Submission flow ──────────────────────────────────────────────────────
+    function confirmSubmit() {
+      document.getElementById('confirm-modal').classList.add('active');
+    }
+
+    function doSubmit() {
+      document.getElementById('confirm-modal').classList.remove('active');
+      document.getElementById('submit-btn').textContent = 'Submitting...';
+      document.getElementById('submit-btn').disabled = true;
+      document.getElementById('pa-form').submit();
+    }
+  </script>
+</body>
+</html>

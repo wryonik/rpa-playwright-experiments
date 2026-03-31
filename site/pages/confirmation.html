@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>PortalX — Submission Confirmed</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; background: #c8c8c8; margin: 0; font-size: 13px; }
+    .header { background: #003366; color: white; padding: 8px 16px; font-size: 15px; font-weight: bold; }
+    .header span { font-size: 11px; font-weight: normal; display: block; color: #aaccff; }
+    .container { width: 560px; margin: 60px auto; background: white; border: 1px solid #999; box-shadow: 2px 2px 6px rgba(0,0,0,0.3); }
+    .success-header { background: #2a7a2a; color: white; padding: 12px 18px; font-size: 14px; font-weight: bold; }
+    .body { padding: 22px 24px; }
+    .ref-box { background: #f5f8ff; border: 1px solid #c5d5ea; padding: 14px 18px; margin-bottom: 16px; }
+    .ref-label { font-size: 11px; color: #666; margin-bottom: 4px; }
+    .ref-id { font-size: 22px; font-family: monospace; font-weight: bold; color: #003366; letter-spacing: 2px; }
+    .detail-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 14px; }
+    .detail-table td { padding: 6px 8px; border-bottom: 1px solid #eee; }
+    .detail-table td:first-child { font-weight: bold; color: #444; width: 180px; }
+    .detail-table td:last-child { color: #333; }
+    .btn-new { background: linear-gradient(to bottom, #4a7ab5, #2c5f9e); color: white; border: 1px solid #1a4a80; padding: 7px 20px; font-size: 12px; cursor: pointer; margin-top: 18px; }
+    .btn-logout { background: #e0e0e0; border: 1px solid #aaa; padding: 7px 16px; font-size: 12px; cursor: pointer; margin-left: 8px; }
+    .footer { background: #e8edf2; border-top: 1px solid #bbb; padding: 6px 16px; font-size: 10px; color: #666; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    PortalX CGS Prior Authorization Portal
+    <span>Jurisdiction C — Submission Confirmation</span>
+  </div>
+  <div class="container">
+    <div class="success-header">✓ Prior Authorization Request Submitted Successfully</div>
+    <div class="body">
+      <div class="ref-box">
+        <div class="ref-label">Authorization Reference Number</div>
+        <div class="ref-id" id="ref-number">{{REF_ID}}</div>
+        <div style="font-size:11px;color:#666;margin-top:6px">
+          Please save this reference number. You will need it to check your authorization status.
+        </div>
+      </div>
+
+      <table class="detail-table">
+        <tr><td>Submission Date</td><td id="sub-date"></td></tr>
+        <tr><td>Beneficiary</td><td>Rivera, Alex — DOB: 06/15/1985</td></tr>
+        <tr><td>Medicare ID</td><td>1EG4-TE5-MK72</td></tr>
+        <tr><td>Ordering Provider NPI</td><td>1234567890 — Dr. Morgan Lee, MD</td></tr>
+        <tr><td>HCPCS Code</td><td>E0601 — CPAP Device</td></tr>
+        <tr><td>Jurisdiction</td><td>C</td></tr>
+        <tr><td>Status</td><td style="color:#b07000;font-weight:bold">Pending Review (5–10 business days)</td></tr>
+      </table>
+
+      <div>
+        <button class="btn-new" onclick="window.location='/patient-search'">New Request</button>
+        <button class="btn-logout" onclick="window.location='/login'">Logout</button>
+      </div>
+    </div>
+    <div class="footer">© 2024 CGS Administrators, LLC. All rights reserved.</div>
+  </div>
+  <script>
+    document.getElementById('sub-date').textContent = new Date().toLocaleString();
+  </script>
+</body>
+</html>

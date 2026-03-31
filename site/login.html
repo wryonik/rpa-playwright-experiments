@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PortalX — Login</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f0f2f5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .card {
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+      padding: 40px;
+      width: 360px;
+    }
+    .logo { font-size: 22px; font-weight: 700; color: #1a56db; margin-bottom: 8px; }
+    .subtitle { color: #6b7280; font-size: 13px; margin-bottom: 28px; }
+    label { display: block; font-size: 13px; font-weight: 500; color: #374151; margin-bottom: 4px; }
+    input[type=text], input[type=password] {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 14px;
+      margin-bottom: 16px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input:focus { border-color: #1a56db; }
+    .error { color: #dc2626; font-size: 12px; margin-bottom: 12px; display: none; }
+    button {
+      width: 100%;
+      background: #1a56db;
+      color: white;
+      border: none;
+      padding: 10px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    button:hover { background: #1e429f; }
+    .hint { color: #9ca3af; font-size: 11px; margin-top: 16px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">PortalX</div>
+    <div class="subtitle">Prior Authorization Management System</div>
+    <div class="error" id="error">Invalid username or password. Please try again.</div>
+    <label for="username">Username</label>
+    <input type="text" id="username" placeholder="Enter your username" autocomplete="off">
+    <label for="password">Password</label>
+    <input type="password" id="password" placeholder="Enter your password">
+    <button id="login-btn" onclick="doLogin()">Sign In</button>
+    <div class="hint">Hint: admin / password123</div>
+  </div>
+
+  <script>
+    // Simulate a 600ms network delay on login (like a real portal)
+    function doLogin() {
+      const u = document.getElementById('username').value;
+      const p = document.getElementById('password').value;
+      const btn = document.getElementById('login-btn');
+      btn.textContent = 'Signing in...';
+      btn.disabled = true;
+
+      setTimeout(() => {
+        if (u === 'admin' && p === 'password123') {
+          document.cookie = 'portalx_session=valid_session_abc123; path=/; max-age=3600';
+          sessionStorage.setItem('loggedIn', 'true');
+          sessionStorage.setItem('username', u);
+          window.location.href = '/form.html';
+        } else {
+          document.getElementById('error').style.display = 'block';
+          btn.textContent = 'Sign In';
+          btn.disabled = false;
+        }
+      }, 600);
+    }
+
+    // Allow Enter key to submit
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Enter') doLogin();
+    });
+
+    // Check if already logged in
+    if (sessionStorage.getItem('loggedIn') === 'true') {
+      window.location.href = '/form.html';
+    }
+  </script>
+</body>
+</html>

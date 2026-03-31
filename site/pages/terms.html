@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>PortalX — Terms &amp; Jurisdiction</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; background: #c8c8c8; margin: 0; font-size: 13px; }
+    .header { background: #003366; color: white; padding: 8px 16px; font-size: 15px; font-weight: bold; }
+    .header span { font-size: 11px; font-weight: normal; display: block; color: #aaccff; }
+    .container { width: 600px; margin: 40px auto; background: white; border: 1px solid #999; box-shadow: 2px 2px 6px rgba(0,0,0,0.3); }
+    .form-header { background: #e8edf2; border-bottom: 1px solid #bbb; padding: 10px 16px; font-size: 13px; font-weight: bold; color: #003366; }
+    .form-body { padding: 20px 24px; }
+    .terms-box {
+      height: 180px; overflow-y: scroll; border: 1px solid #bbb;
+      padding: 10px 12px; font-size: 11px; color: #444; background: #fafafa;
+      line-height: 1.7; margin-bottom: 14px;
+    }
+    .jurisdiction-section { margin-top: 16px; }
+    .jurisdiction-section h4 { font-size: 12px; color: #003366; border-bottom: 1px solid #ccd; padding-bottom: 4px; margin-bottom: 10px; }
+    .jur-card {
+      border: 1px solid #bbb; padding: 12px 14px; margin-bottom: 8px;
+      cursor: pointer; transition: background 0.15s; display: flex; align-items: center; gap: 12px;
+    }
+    .jur-card:hover { background: #eef4ff; border-color: #336699; }
+    .jur-card.selected { background: #ddeeff; border-color: #2255aa; }
+    .jur-card .jur-label { font-weight: bold; font-size: 12px; color: #003366; }
+    .jur-card .jur-desc { font-size: 11px; color: #666; }
+    .jur-card input[type=radio] { flex-shrink: 0; }
+    .btn-enter {
+      background: linear-gradient(to bottom, #3a7a3a, #2a5e2a);
+      color: white; border: 1px solid #1a4a1a; padding: 6px 22px;
+      font-size: 12px; cursor: pointer; margin-top: 14px;
+    }
+    .btn-enter:hover { background: linear-gradient(to bottom, #4a8a4a, #3a6e3a); }
+    .btn-enter:disabled { background: #888; border-color: #666; cursor: not-allowed; }
+
+    /* "An Error occurred" modal — mirrors MyCGS random error modal */
+    .modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 1000; align-items: center; justify-content: center; }
+    .modal-backdrop.active { display: flex; }
+    .modal-box { background: white; border: 1px solid #999; width: 360px; box-shadow: 3px 3px 10px rgba(0,0,0,0.4); }
+    .modal-title { background: #8b0000; color: white; padding: 6px 12px; font-size: 12px; font-weight: bold; }
+    .modal-body { padding: 16px 14px; font-size: 12px; color: #333; }
+    .modal-footer { padding: 8px 14px; text-align: right; border-top: 1px solid #ddd; background: #f5f5f5; }
+    .modal-ok { background: #2c5f9e; color: white; border: 1px solid #1a4a80; padding: 4px 16px; font-size: 12px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    PortalX CGS Prior Authorization Portal
+    <span>Terms of Use &amp; Jurisdiction Selection</span>
+  </div>
+
+  <div class="container">
+    <div class="form-header">Terms of Use Agreement</div>
+    <div class="form-body">
+      <div class="terms-box" id="terms-text">
+        <strong>TERMS OF USE FOR CGS PRIOR AUTHORIZATION PORTAL</strong><br><br>
+        By accessing this portal, you agree to the following terms and conditions. This system
+        is for authorized users only. Unauthorized access or misuse of this system is prohibited
+        and may be subject to criminal and/or civil prosecution.<br><br>
+        All information submitted through this portal is subject to the Health Insurance Portability
+        and Accountability Act (HIPAA). Users are responsible for ensuring the confidentiality
+        of all Protected Health Information (PHI) accessed or submitted through this system.<br><br>
+        Session activity may be logged and monitored. By continuing, you consent to such monitoring.
+        Sessions will automatically expire after periods of inactivity.<br><br>
+        Misrepresentation of information submitted for prior authorization may constitute healthcare
+        fraud under 18 U.S.C. § 1347 and applicable state laws.<br><br>
+        CGS Administrators, LLC reserves the right to modify or terminate access to this portal
+        at any time without notice.<br><br>
+        <em>Scroll to bottom to enable jurisdiction selection.</em>
+      </div>
+
+      <div class="jurisdiction-section">
+        <h4>Select Your Jurisdiction</h4>
+
+        <form method="POST" action="/terms" id="terms-form">
+          <div class="jur-card" onclick="selectJur(this, 'C')">
+            <input type="radio" name="jurisdiction" value="C" id="jur-c">
+            <div>
+              <div class="jur-label">Jurisdiction C</div>
+              <div class="jur-desc">Alabama, Arkansas, Colorado, Florida, Georgia, Louisiana, Mississippi, New Mexico, North Carolina, Oklahoma, South Carolina, Tennessee, Texas, Virginia, West Virginia</div>
+            </div>
+          </div>
+          <div class="jur-card" onclick="selectJur(this, 'D')">
+            <input type="radio" name="jurisdiction" value="D" id="jur-d">
+            <div>
+              <div class="jur-label">Jurisdiction D</div>
+              <div class="jur-desc">Alaska, Arizona, California (South), Hawaii, Idaho, Montana, Nevada, North Dakota, Oregon, South Dakota, Utah, Washington, Wyoming</div>
+            </div>
+          </div>
+
+          <!-- The exact button ID targeted by MyCGS automation -->
+          <button type="submit" class="btn-enter" id="enter-jurisdiction-btn" disabled>
+            Enter Jurisdiction C
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- "An Error occurred" modal — injected server-side 8% of time -->
+  <div class="modal-backdrop" id="error-modal">
+    <div class="modal-box">
+      <div class="modal-title">An Error Occurred</div>
+      <div class="modal-body">
+        An unexpected error occurred while processing your request.<br>
+        Please try again. If the problem persists, contact the CGS EDI Help Desk.
+      </div>
+      <div class="modal-footer">
+        <button class="modal-ok" id="error-modal-ok" onclick="dismissErrorModal()">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    var INJECT_ERROR = false; // overridden by server
+
+    function selectJur(card, val) {
+      document.querySelectorAll('.jur-card').forEach(c => c.classList.remove('selected'));
+      card.classList.add('selected');
+      card.querySelector('input').checked = true;
+      // Update button text to reflect selected jurisdiction
+      document.getElementById('enter-jurisdiction-btn').textContent = 'Enter Jurisdiction ' + val;
+      document.getElementById('enter-jurisdiction-btn').disabled = false;
+    }
+
+    function dismissErrorModal() {
+      document.getElementById('error-modal').classList.remove('active');
+    }
+
+    // Enable button after scrolling terms to bottom
+    document.getElementById('terms-text').addEventListener('scroll', function() {
+      if (this.scrollTop + this.clientHeight >= this.scrollHeight - 5) {
+        // Don't auto-enable, user must pick jurisdiction — but pre-select C for convenience
+        selectJur(document.querySelector('.jur-card'), 'C');
+      }
+    });
+
+    // Server-side error injection flag — replaced by server.py
+    var INJECT_ERROR_SERVER = "INJECT_ERROR_MODAL=0".split("=")[1] === "1";
+    if (INJECT_ERROR_SERVER) {
+      window.addEventListener('load', function() {
+        setTimeout(function() {
+          document.getElementById('error-modal').classList.add('active');
+        }, 400);
+      });
+    }
+  </script>
+</body>
+</html>
