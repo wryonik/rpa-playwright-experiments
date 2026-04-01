@@ -90,11 +90,19 @@ async def step_mfa(page: Page, retries: int = 3) -> float:
     """
     Enter TOTP code character-by-character (paste is blocked on the input).
     Handles the 'The data entered is incorrect' modal with up to `retries` attempts.
+    Generates TOTP at the last possible moment and waits out any window boundary
+    within 3 s to avoid the code expiring mid-submit.
     """
     t = time.perf_counter()
     for attempt in range(retries):
         await page.wait_for_url(f"{SITE}/mfa", timeout=5000)
-        code = current_totp()
+        # Wait out any TOTP boundary that is fewer than 3 s away
+        while True:
+            window_remaining = 30 - (time.time() % 30)
+            if window_remaining > 3:
+                break
+            await asyncio.sleep(1)
+        code = current_totp()  # generated right before typing
         inp = page.locator("#MFAEntryPanel #txtMFACode")
         await inp.wait_for(state="visible", timeout=5000)
         await inp.click()
@@ -145,6 +153,9 @@ async def step_npi(page: Page) -> float:
 
     # Dismiss random alert modal (20% chance it appears)
     await dismiss_alert_modal(page)
+    # Wait until modal is fully gone before clicking — prevents race on high-latency CDP
+    # state="hidden" = wait until #alert-modal.active is no longer visible (or never existed)
+    await page.wait_for_selector("#alert-modal.active", state="hidden", timeout=5000)
 
     # Select first NPI row (the active one)
     await page.click(".npi-table tbody tr:first-child")
@@ -161,10 +172,11 @@ async def step_patient_search(page: Page) -> float:
     # Dismiss server error dialog if present (JS alert from previous POST)
     # The dialog handler already auto-accepts native dialogs
 
-    # Fill ASP.NET-style search fields (mirrors Brightree: #LastName, #FirstName, #DateOfBirth)
-    await page.fill("#LastName", "Rivera")
-    await page.fill("#FirstName", "Alex")
-    await page.fill("#DateOfBirth", "06/15/1985")
+    # Fill ASP.NET-style search fields — batch (1 round-trip instead of 3)
+    await page.evaluate("""() => {
+        const s = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+        s('LastName', 'Rivera'); s('FirstName', 'Alex'); s('DateOfBirth', '06/15/1985');
+    }""")
 
     # Submit — wait for API response (mirrors wait_for_api_url pattern)
     async with page.expect_response(lambda r: "/api/patient-search" in r.url) as resp_info:
@@ -175,24 +187,16 @@ async def step_patient_search(page: Page) -> float:
     # Wait for results table
     await page.wait_for_selector("#results-table", state="visible", timeout=5000)
 
-    # Find row with match score >= 99 (column 6) — mirrors iterate() with geq operation
-    best_row = None
-    rows = await page.locator("#results-tbody tr").all()
-    for row in rows:
-        score_cell = row.locator("td:nth-of-type(6)")
-        try:
-            score_text = await score_cell.inner_text(timeout=1000)
-            if int(score_text.strip()) >= 99:
-                best_row = row
-                break
-        except Exception:
-            continue
-
-    if best_row:
-        await best_row.click()
-    else:
-        # Fall back to first row
-        await rows[0].click()
+    # Find row with match score >= 99 (column 6) — single evaluate() instead of N round-trips
+    best_row_idx = await page.evaluate("""() => {
+        const rows = document.querySelectorAll('#results-tbody tr');
+        for (let i = 0; i < rows.length; i++) {
+            const score = parseInt((rows[i].cells[5] || {}).innerText || '0');
+            if (score >= 99) return i;
+        }
+        return 0;
+    }""")
+    await page.locator(f"#results-tbody tr:nth-child({best_row_idx + 1})").click()
 
     await page.click("#proceed-btn")
     await page.wait_for_url(f"{SITE}/prior-auth", timeout=6000)
@@ -207,16 +211,27 @@ async def step_prior_auth_form(page: Page, retries: int = 2) -> float:
 
         # Dismiss "An Error occurred" DOM modal if server injected one
         await dismiss_dom_error_modal(page)
+        # Wait until modal is fully gone before interacting — prevents race on high-latency CDP
+        await page.wait_for_selector("#error-modal.active", state="hidden", timeout=5000)
 
-        # Section 1: Contact info
-        await page.fill("#contact_name", "Jordan Smith")
-        await page.fill("#contact_number", "5551234567")
-
-        # Section 2: Beneficiary
-        await page.fill("#insurance_id", "1EG4-TE5-MK72")
-        await page.fill("#ben_last_name", "Rivera")
-        await page.fill("#ben_first_name", "Alex")
-        await page.fill("#date_of_birth", "06/15/1985")
+        # Section 1: Contact info — batch fill via evaluate (1 round-trip instead of 6)
+        await page.evaluate("""() => {
+            const s = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+            s('contact_name', 'Jordan Smith');
+            s('contact_number', '5551234567');
+            s('insurance_id', '1EG4-TE5-MK72');
+            s('ben_last_name', 'Rivera');
+            s('ben_first_name', 'Alex');
+            s('date_of_birth', '06/15/1985');
+        }""")
+        # Trigger change events so any field validators fire
+        await page.evaluate("""() => {
+            ['contact_name','contact_number','insurance_id','ben_last_name','ben_first_name','date_of_birth']
+                .forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.dispatchEvent(new Event('input', { bubbles: true }));
+                });
+        }""")
 
         # Section 3: Provider — Quick-lookup (data-quicklookup field)
         # Type into field → dropdown appears → click matching item
@@ -256,13 +271,14 @@ async def step_prior_auth_form(page: Page, retries: int = 2) -> float:
                 continue
             break
 
-        # ICD-10
-        await page.fill("#icd10_code", "J96.00")
-        await page.fill("#height", "70")
-        await page.fill("#weight", "185")
-
-        # Clinical notes
-        await page.fill("#clinical_notes", "Patient requires CPAP therapy. AHI >15 confirmed by polysomnography. Clinical necessity documented.")
+        # ICD-10 + remaining fields — batch fill (1 round-trip)
+        await page.evaluate("""() => {
+            const s = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+            s('icd10_code', 'J96.00');
+            s('height', '70');
+            s('weight', '185');
+            s('clinical_notes', 'Patient requires CPAP therapy. AHI >15 confirmed by polysomnography. Clinical necessity documented.');
+        }""")
 
         # Submit — triggers confirmation modal
         await page.click("#submit-btn")

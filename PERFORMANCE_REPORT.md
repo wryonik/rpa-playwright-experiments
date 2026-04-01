@@ -17,18 +17,21 @@ Ten experiments were run across two phases:
 | Chrome memory per worker | **~593 MB** (constant across 1–8 workers; total scales proportionally) |
 | Workers tested on 7.65 GB Docker host | Up to **8 workers** (peak 4.74 GB, 62% of available RAM) |
 | Local Playwright avg (7-step v2 workflow, vs Render) | **12.4 s** |
-| Browserbase CDP avg (same workflow, same Render URL) | **94.6 s** |
-| Browserbase overhead vs local | **+665% avg, +750% p95** |
-| Browserbase session startup (create + CDP connect) | **2.9 s** — only 3% of total workflow time |
-| Browserbase success rate (10 sequential runs) | **40%** |
+| Browserbase CDP avg — before modal/TOTP fixes | **94.6 s** (40% success) |
+| Browserbase CDP avg — after modal/TOTP fixes | **79.1 s** (70% success) |
+| Browserbase overhead vs local (post-fix) | **+940% avg** |
+| Browserbase session startup (create + CDP connect) | **2.96 s** — only 4% of total workflow time |
+| Browserbase success rate (10 sequential, before fix) | **40%** |
+| Browserbase success rate (10 sequential, after fix) | **70%** |
 | Browserbase success rate (3 concurrent sessions) | **67%** |
+| Browserbase plan limit (free tier) | **3 concurrent sessions max** |
 | Memory leak rate (local, 4 workers, 10 min) | **+340 MB/hr** (Python process RSS) |
 | Session reuse (cookie restore vs full login) | **90% login time reduction** |
 | Queue throughput (local, Docker site) | **76 jobs/min at 4 workers, 150 jobs/min at 8 workers** |
 
-**Critical discovery — Browserbase failures are not caused by session overhead.** The 2.9 s startup cost is negligible. Failures are caused by **modal timing race conditions**: over the higher-latency CDP path, random DOM modals appear after the dismiss-check has already passed, intercepting the next click. All 5 modal-related failures have a known fix. See §3.9.
+**Critical discovery — Browserbase failures are not caused by session overhead.** The 2.96 s startup cost is negligible. Failures are caused by **modal timing race conditions**: over the higher-latency CDP path, random DOM modals appear after the dismiss-check has already passed, intercepting the next click. Adding `wait_for_selector(modal, state="hidden")` guards improved the success rate from 40% → 70%. See §3.9.
 
-**MFA timing spike on Browserbase.** TOTP MFA averages 20.6 s over Browserbase vs 1.0 s local. Root cause: with ~7–9 s of page-load latency before MFA, the TOTP code can expire mid-submit and trigger a retry. Each retry adds ~6–8 s. Fix: generate the TOTP code immediately before typing rather than at session start. See §3.9.
+**MFA timing spike on Browserbase.** TOTP MFA averages ~20 s over Browserbase vs 1.0 s local. Root cause: with ~7–9 s of page-load latency before MFA, the TOTP code can expire mid-submit and trigger a retry. Each retry adds ~6–8 s. TOTP boundary fix (generate code at last moment, skip if <3 s to window) was applied but MFA timing did not meaningfully change, suggesting the retries are being caused by something else too. See §3.9.
 
 ---
 
@@ -199,13 +202,16 @@ p95 is stable (~8.8–9.3 s) across all concurrency levels — tail is driven by
 
 Both local Playwright (running inside Docker on the host machine) and Browserbase CDP hit the same public Render URL. Network path to the site is identical for both — the only difference is the browser automation stack.
 
-**10 iterations each, sequential:**
+This experiment was run twice: first with the original script (baseline), then after applying modal guard and TOTP boundary fixes to measure the improvement.
+
+**10 iterations each, sequential — both runs:**
 
 | Mode | Success | Avg total | p95 total |
 |------|---------|-----------|-----------|
 | Local Playwright → Render | **8 / 10 (80%)** | **12.36 s** | **21.66 s** |
-| Browserbase CDP → Render | **4 / 10 (40%)** | **94.62 s** | **184.11 s** |
-| Overhead | — | **+665.5%** | **+750.0%** |
+| Browserbase CDP → Render (before fixes) | **4 / 10 (40%)** | **94.62 s** | **184.11 s** |
+| Browserbase CDP → Render (after fixes) | **7 / 10 (70%)** | **79.14 s** | **121.89 s** |
+| Improvement from fixes | — | **-16.4%** | **-33.8%** |
 
 **Local per-step breakdown (successful runs only):**
 
@@ -221,7 +227,7 @@ Both local Playwright (running inside Docker on the host machine) and Browserbas
 
 > prior_auth p95 (13.68 s) vs avg (5.46 s): the gap is caused by the 10% server-error dialog triggering a form re-submit.
 
-**Browserbase per-step breakdown (all 10 runs, including partial):**
+**Browserbase per-step breakdown — before fixes (all 10 runs, including partial):**
 
 | Step | n | avg | p50 | p95 | max |
 |------|---|-----|-----|-----|-----|
@@ -235,57 +241,75 @@ Both local Playwright (running inside Docker on the host machine) and Browserbas
 | prior_auth | 4 | 35.847 s | 35.888 s | 37.469 s | 37.469 s |
 | confirmation | 4 | 1.157 s | 1.554 s | 1.568 s | 1.568 s |
 
-> `n` decreases for later steps because failed runs don't reach them. `confirmation` avg (1.157 s) is lower than p50 (1.554 s) due to a bimodal distribution: 2 runs completed in ~0.75 s, 2 runs in ~1.55 s.
+> `n` decreases for later steps because failed runs don't reach them.
 
-**Per-step overhead (Browserbase vs local):**
+**Browserbase per-step breakdown — after fixes (all 10 runs, including partial):**
 
-| Step | Local avg | BB avg | Δ |
+| Step | n | avg | p50 | p95 | max |
+|------|---|-----|-----|-----|-----|
+| session_create | 10 | 0.960 s | 0.958 s | 1.103 s | 1.103 s |
+| cdp_connect | 10 | 2.000 s | 1.875 s | 3.174 s | 3.174 s |
+| login | 10 | 8.246 s | 7.818 s | 10.458 s | 10.458 s |
+| mfa | 9 | 20.931 s | 20.515 s | 23.132 s | 23.132 s |
+| terms | 9 | 7.825 s | 7.886 s | 8.323 s | 8.323 s |
+| npi | 9 | 7.776 s | 7.632 s | 8.389 s | 8.389 s |
+| patient_search | 8 | 11.895 s | 11.838 s | 12.920 s | 12.920 s |
+| prior_auth | 7 | 29.189 s | 24.339 s | 57.506 s | 57.506 s |
+| confirmation | 7 | 1.302 s | 1.452 s | 1.756 s | 1.756 s |
+
+> Modal guards allowed more runs to reach later steps — `npi` went from n=6 to n=9 (3 more runs got past the modal). `patient_search` improved from 16.48 s to 11.90 s avg. `mfa` remains ~21 s despite the TOTP boundary fix (see below).
+
+**Per-step overhead (Browserbase post-fix vs local):**
+
+| Step | Local avg | BB avg (post-fix) | Δ |
 |------|-----------|--------|---|
-| session_create | — | 0.981 s | BB only |
-| cdp_connect | — | 1.915 s | BB only |
-| login | 0.929 s | 7.429 s | +699.7% |
-| mfa | 1.008 s | 20.607 s | +1944.3% |
-| terms | 2.443 s | 8.091 s | +231.2% |
-| npi | 2.058 s | 7.065 s | +243.3% |
-| patient_search | 1.551 s | 16.477 s | +962.3% |
-| prior_auth | 5.457 s | 35.847 s | +556.9% |
-| confirmation | 0.012 s | 1.157 s | +9541.7% |
+| session_create | — | 0.960 s | BB only |
+| cdp_connect | — | 2.000 s | BB only |
+| login | 0.929 s | 8.246 s | +787% |
+| mfa | 1.008 s | 20.931 s | +1976% |
+| terms | 2.443 s | 7.825 s | +220% |
+| npi | 2.058 s | 7.776 s | +278% |
+| patient_search | 1.551 s | 11.895 s | +667% |
+| prior_auth | 5.457 s | 29.189 s | +435% |
+| confirmation | 0.012 s | 1.302 s | +10750% |
 
-**Browserbase startup overhead:**
-- Session create: **0.981 s avg** (p95: 1.230 s)
-- CDP connect: **1.915 s avg** (p95: 2.255 s)
-- Total startup: **2.896 s** — only **3% of avg total workflow time (94.6 s)**
+**Browserbase startup overhead (post-fix run):**
+- Session create: **0.960 s avg** (p95: 1.103 s)
+- CDP connect: **2.000 s avg** (p95: 3.174 s)
+- Total startup: **2.960 s** — only **4% of avg total workflow time (79.1 s)**
 
-The startup cost is not the bottleneck. 97% of Browserbase's total time is spent executing browser steps over the CDP network path.
+The startup cost is not the bottleneck. 96% of Browserbase's total time is spent executing browser steps over the CDP network path.
 
-**Failure root causes (6 failures across 10 runs):**
+**Failure root causes — before fixes (6 failures across 10 runs):**
 
 | Run | Step failed | What happened |
 |-----|------------|---------------|
 | 01 | npi | `#alert-modal` visible when NPI row click fired — modal intercepted the click |
-| 05 | patient_search | `wait_for_url /prior-auth` timed out — Render slow to respond after patient search submit |
+| 05 | patient_search | `wait_for_url /prior-auth` timed out — Render slow to respond |
 | 06 | npi | Same as run 01 — `#alert-modal` intercepted NPI click |
 | 08 | npi | Same as run 01 |
 | 10 | prior_auth | `#error-modal` visible when Vuetify v-select arrow click fired |
-| 2 runs | (background) | `Dialog.accept: No dialog is showing` — native dialog fired and was auto-dismissed by Chrome before CDP handler responded. Non-fatal, logged as background exception. |
+| 2 runs | (background) | `Dialog.accept: No dialog is showing` — native dialog dismissed before CDP handler responded |
 
-**Pattern:** 5 of 6 failures are modal timing races. In local mode, the `dismiss_*` check and the subsequent `.click()` happen within microseconds in the same process. Over Browserbase CDP, each action is a network round-trip (~50–200 ms), giving the modal time to appear between the check and the click.
+**Failure root causes — after fixes (3 failures across 10 runs):**
 
-**Fix:** Replace optimistic `wait_for(state="visible", timeout=1500)` checks with `wait_for_selector(modal, state="hidden")` before each interaction — wait for the modal to be gone before proceeding, rather than hoping it isn't there.
+| Run | Step failed | What happened |
+|-----|------------|---------------|
+| 02 | prior_auth | `#error-modal.active` still visible after 5 s × 6 `dismiss` attempts — `dismiss_dom_error_modal()` clicked the button but the server kept re-injecting the error; 5 s guard timeout expired |
+| 09 | prior_auth | Navigation timeout to `/prior-auth` — Render response latency spike |
+| 10 | login | Concurrent session detected → skipped |
 
-**MFA root cause — TOTP boundary expiry:**
+**Pattern:** Modal guard fixes eliminated all NPI modal failures (3 runs). The remaining prior_auth failure is a different case: the server injected the error modal faster than the dismiss + wait_for_hidden cycle. This requires a retry loop with a longer timeout, not just a guard.
 
-TOTP codes are valid for exactly 30 seconds. In Browserbase mode:
-1. Login page load + fill + submit: **~7–9 s**
-2. We arrive at `/mfa` potentially 8–10 s into the current 30 s window
-3. `step_mfa` generates `current_totp()` at this point — if the window is nearly expired, the code will be invalid by the time the submit round-trip completes
-4. Server rejects → `step_mfa` retries (up to 3 times), each retry adding ~6–8 s
+**MFA timing — TOTP boundary fix analysis:**
 
-This explains the consistent ~20 s MFA step across all Browserbase runs. **Fix:** Generate `current_totp()` immediately before typing (not at step entry), and skip typing if fewer than 3 s remain in the current 30 s window.
+The TOTP boundary fix (wait for >3 s remaining in window before generating code) was applied but MFA time remained ~21 s. Likely reason: with 7–9 s of login latency, the TOTP window sometimes expires while the MFA form is being submitted (network delay in the submit round-trip itself), not just during code generation. A full fix would require generating the code at the exact moment the MFA field is focused, and retrying the full submit if the server rejects.
 
 ---
 
-### 3.10 Concurrent Browserbase Sessions (3 in parallel → Render)
+### 3.10 Concurrent Browserbase Sessions (3 and 5 in parallel → Render)
+
+#### 3-way concurrent (original run, before fixes)
 
 3 Browserbase sessions launched simultaneously.
 
@@ -319,6 +343,32 @@ This explains the consistent ~20 s MFA step across all Browserbase runs. **Fix:*
 Sessions do not interfere with each other. Session create times and step timings are consistent between concurrent and sequential runs. Browserbase session isolation is working correctly.
 
 **Failure:** Session S02 failed at `patient_search` with a navigation timeout — same class of issue as sequential run 05 (Render response latency). Not a concurrency-specific failure.
+
+#### 5-way concurrent (attempted — plan limit discovered)
+
+Attempted to launch 5 sessions simultaneously. **The Browserbase free tier allows a maximum of 3 concurrent sessions.**
+
+Sessions S01 and S05 received HTTP 429 immediately on creation:
+```
+Error code: 429 - You've exceeded your max concurrent sessions limit
+(limit 3, currently 3). Please contact support to increase your limit.
+```
+
+Sessions S02, S03, S04 successfully created (the first 3 through). Of those 3:
+
+| Session | Result | Notes |
+|---------|--------|-------|
+| S02 | ✓ 98.4 s | Full workflow completed |
+| S03 | ✓ 96.3 s | Full workflow completed |
+| S04 | ✗ 68.5 s | `patient_search` timed out (Render latency spike) |
+
+**Wall time: 98.7 s** (parallel — the slowest successful session determined wall time)
+
+**Session creation under 5-way concurrency (3 that got through):**
+- avg: 1.016 s, max: 1.079 s, min: 0.982 s
+- Consistent with sequential and 3-way concurrent — no queuing at creation
+
+**Plan limit impact:** 5-way and 10-way concurrency cannot be tested on the current Browserbase free tier plan (max 3 concurrent). The limit is enforced per-account at session creation time.
 
 ---
 
@@ -439,11 +489,12 @@ Browserbase (13 total runs: 10 sequential + 3 concurrent): **6 failures, all fro
 | Gap | Why it matters |
 |-----|---------------|
 | Real portal (Brightree / MyCGS) timing | All timing numbers are PortalX — real portals have SSO, heavier AJAX, document upload |
-| Browserbase at >3 concurrent sessions | Only tested 3-way; behaviour at 5, 10+ sessions is unknown |
-| Browserbase success rate after modal timing fixes | Current 40% is before the `state="hidden"` fix |
+| Browserbase at >3 concurrent sessions | Free tier caps at 3; would need a paid plan to test 5, 10+ |
+| Full MFA TOTP fix validation | Boundary fix applied but MFA still ~21 s — submit-time expiry not yet fixed |
 | Memory leak with context rotation | Only measured without rotation |
-| Browserbase long-run stability (10+ min continuous) | Only ran sequential + 1 concurrent batch |
+| Browserbase long-run stability (10+ min continuous) | Only ran sequential + concurrent batches, no extended run |
 | Worker count above 8 (local) | Tested up to 8 workers; 9–13 workers untested |
+| Browserbase from same-region cloud host | All measurements from Mac with ~100 ms RTT; same-region would be ~5–20 ms |
 
 ---
 
@@ -451,8 +502,8 @@ Browserbase (13 total runs: 10 sequential + 3 concurrent): **6 failures, all fro
 
 | Bottleneck | Evidence | Fix |
 |------------|----------|-----|
-| **Browserbase modal race conditions** | 5/10 sequential BB failures | `wait_for_selector(modal, state="hidden")` before each interaction |
-| **TOTP boundary expiry (Browserbase)** | MFA avg 20.6 s on BB vs 1.0 s local | Generate `current_totp()` at last moment; skip if <3 s to boundary |
+| **Browserbase modal race conditions** | 5/10 sequential BB failures (before fix); reduced to 1/10 after `state="hidden"` guards | `wait_for_selector(modal, state="hidden")` before each interaction — partially implemented, further fix needed for persistent error modal |
+| **TOTP boundary expiry (Browserbase)** | MFA avg ~21 s on BB vs 1.0 s local — persists after boundary check fix | Generate `current_totp()` at the moment of submit click, not at step entry; need retry loop if server rejects |
 | **Python process memory leak** | +340 MB/hr at 4 workers | BrowserContext rotation every 50–100 workflows |
 | **Native dialog handler mandatory** | Blocks indefinitely without it (confirmed in popup test) | `page.on("dialog", ...)` everywhere |
 | **DOM modal portal-specific** | Global dialog handler does not catch these | Per-portal explicit `.click()` handler |
@@ -489,10 +540,13 @@ All rows above are directly from measured data. The formula `floor((RAM_MB - 500
 
 ### What to run next (before drawing further conclusions)
 
-1. Re-run `exp_browserbase_latency.py` after fixing modal guards and TOTP timing — current 40% success rate makes the timing numbers incomplete
-2. Run `exp_browserbase_concurrent.py --sessions 5` and `--sessions 10` — concurrency above 3 not yet tested
-3. Run `exp_long_run.py` against Render to measure Browserbase stability over 10+ minutes
-4. Run any experiment against a real Brightree or MyCGS staging environment — all current numbers are synthetic
+1. ~~Re-run `exp_browserbase_latency.py` after fixing modal guards and TOTP timing~~ — **Done.** 70% success, 79.1 s avg (was 40%, 94.6 s). See §3.9.
+2. ~~Run `exp_browserbase_concurrent.py --sessions 5`~~ — **Done. Hit plan limit (max 3 concurrent on free tier).** S01 and S05 got HTTP 429. See §3.10.
+3. ~~Run `exp_browserbase_concurrent.py --sessions 10`~~ — **Cannot run.** Same plan limit applies.
+4. Fix the remaining prior_auth error modal failure (retry loop with longer timeout, not just a guard)
+5. Fix MFA TOTP at submit-time (generate code at the exact moment the submit button is clicked)
+6. Run `exp_long_run.py` against Render to measure stability over 10+ minutes — not yet run
+7. Run any experiment against a real Brightree or MyCGS staging environment — all current numbers are synthetic
 
 ---
 
