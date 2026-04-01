@@ -382,6 +382,35 @@ The runner image includes Chromium, Firefox, and WebKit. Only Chromium is used i
 
 > All numbers are against the same Render URL. These numbers are for PortalX v2 only — no measurements have been taken against real healthcare portals.
 
+### Why the measured overhead is not representative of production
+
+The 94.6 s Browserbase avg and the +665% overhead were measured with the worker running on a **Mac laptop connecting to Browserbase's US cloud servers** — a long network path with ~100 ms round-trip time per CDP command.
+
+In production, workers would be deployed on a cloud host (e.g. AKS) in the **same region as Browserbase**. Server-to-server latency within the same cloud region is ~5–20 ms, not ~100 ms.
+
+**Test setup (what we measured):**
+```
+Mac Docker  ──── ~100 ms RTT ────►  Browserbase US  ──── ~50 ms ────►  Render
+```
+
+**Production setup (not yet measured):**
+```
+AKS pod (East US)  ──── ~5–20 ms RTT ────►  Browserbase (East US)  ──── ~10 ms ────►  Real portal
+```
+
+Effect on the slowest steps — at 25 sequential CDP actions per step:
+
+| | 100 ms RTT (measured, Mac) | 10 ms RTT (estimated, same-region cloud) |
+|---|---|---|
+| CDP overhead per step | ~2.5 s | ~250 ms |
+| patient_search total | 16.48 s | ~3–5 s |
+| prior_auth total | 35.85 s | ~8–12 s |
+| **Full workflow total** | **94.62 s** | **~20–30 s** |
+
+> The cloud column is an estimate derived from the measured per-action latency scaled to ~10 ms RTT. It has not been measured. To get a real number, run `exp_browserbase_latency.py` from a cloud VM in the same region as your Browserbase project.
+
+The session startup cost (2.9 s) does not change — that is Browserbase spinning up a Chrome instance regardless of where the worker is.
+
 ---
 
 ## 5. Stability Findings
