@@ -508,32 +508,168 @@ The runner image includes Chromium, Firefox, and WebKit. Only Chromium is used i
 
 ### Why the measured overhead is not representative of production
 
-The 94.6 s Browserbase avg and the +665% overhead were measured with the worker running on a **Mac laptop connecting to Browserbase's US cloud servers** — a long network path with ~100 ms round-trip time per CDP command.
+The 94.6 s Browserbase avg and the +665% overhead were measured with the worker running on a **Mac laptop connecting to Browserbase's US cloud servers** — a long network path with ~63 ms round-trip time per CDP command (Eastern US → Browserbase us-east-1, per Browserbase's published latency data).
 
-In production, workers would be deployed on a cloud host (e.g. AKS) in the **same region as Browserbase**. Server-to-server latency within the same cloud region is ~5–20 ms, not ~100 ms.
+In production, workers would be deployed on AKS (East US) connecting to Browserbase's us-east-1 region. Browserbase's own blog documents that Eastern US clients see **~6 ms RTT** when region-matched, compared to **~63 ms** from a non-matched region.
 
 **Test setup (what we measured):**
 ```
-Mac Docker  ──── ~100 ms RTT ────►  Browserbase US  ──── ~50 ms ────►  Render
+Mac Docker  ──── ~63 ms RTT ────►  Browserbase us-east-1  ──── ~50 ms ────►  Render
 ```
 
 **Production setup (not yet measured):**
 ```
-AKS pod (East US)  ──── ~5–20 ms RTT ────►  Browserbase (East US)  ──── ~10 ms ────►  Real portal
+AKS pod (East US)  ──── ~6 ms RTT ────►  Browserbase us-east-1  ──── ~10 ms ────►  Real portal
 ```
 
-Effect on the slowest steps — at 25 sequential CDP actions per step:
+The session startup cost (2.96 s) does not change with region — that is Browserbase spinning up a Chrome instance. The RTT reduction saves ~0.2 s on the API calls involved in create+connect, bringing startup to approximately ~2.7 s.
 
-| | 100 ms RTT (measured, Mac) | 10 ms RTT (estimated, same-region cloud) |
+---
+
+## 4b. Production Projections — AKS East US → Browserbase East US
+
+> **Labelling convention used below:**
+> - **Measured** — a number from an actual experiment run
+> - **Derived** — calculated from measured data using a documented formula
+> - **Documented** — published by Browserbase or Kubernetes, not measured by us
+> - **Estimated** — reasoned inference, not backed by measurement or documentation
+
+---
+
+### How each step time is projected
+
+Each step's time has two components:
+
+```
+step_time = browser_work + CDP_overhead
+```
+
+- **browser_work** = page load from Browserbase's browser to the target site + JS execution + server response time. This is approximately what local Playwright measures, since both Mac Docker and Browserbase's browser are making real HTTP requests to the same Render URL. *(Used directly from §3.9 local measurements — measured)*
+- **CDP_overhead** = n\_roundtrips × RTT. Measured at Mac RTT (~63 ms). Projected by scaling to same-region RTT (~6 ms, documented by Browserbase).
+
+**CDP overhead scaling factor:** 63 ms → 6 ms = **10.5× reduction in per-roundtrip cost** *(documented)*
+
+For each step:
+```
+projected_CDP_overhead = measured_CDP_overhead / 10.5
+projected_step_time = local_browser_work + projected_CDP_overhead
+```
+
+Note: MFA is treated separately because its overhead is dominated by TOTP retry storms, not pure RTT math.
+
+---
+
+### Per-step projection: PortalX v2 workflow (same portal, different network path)
+
+The measured data used is from BB Run 2 (modal guards applied, most stable run at 50% success).
+
+| Step | Local avg (measured) | BB Mac avg (measured) | CDP overhead at Mac | Projected CDP overhead at 6ms RTT | Projected step total |
+|------|---------------------|----------------------|---------------------|----------------------------------|----------------------|
+| session_create + CDP connect | — | **2.96 s** | ~0.2 s (API call RTT) | ~0.02 s | **~2.7 s** |
+| login | 0.99 s | 7.59 s | 6.60 s | 0.63 s | **~1.6 s** |
+| mfa | — | — | — | — | **see below** |
+| terms | 2.43 s | 8.14 s | 5.71 s | 0.54 s | **~3.0 s** |
+| npi | 1.97 s | 7.69 s | 5.72 s | 0.55 s | **~2.5 s** |
+| patient_search | 1.51 s | 12.11 s | 10.60 s | 1.01 s | **~2.5 s** |
+| prior_auth | 3.81 s | 24.04 s | 20.23 s | 1.93 s | **~5.7 s** |
+| confirmation | 0.01 s | 1.19 s | 1.18 s | 0.11 s | **~0.1 s** |
+
+> All projected values are derived. They have not been measured from an AKS host.
+
+**MFA step (separate analysis):**
+The ~20 s MFA time is not driven by CDP round-trip count — it is driven by TOTP retry storms. With the boundary fix correctly implemented (generate code at submit time, retry if rejected), MFA should reduce to:
+- Page load: ~0.5 s (same as browser_work, derived from local MFA timing)
+- TOTP boundary wait: 0–3 s (depends on when in the 30 s window you arrive; avg ~1.5 s)
+- Fill 6 chars + submit (CDP overhead at 6 ms RTT): ~0.1 s
+
+Projected MFA with correct fix: **~2–4 s** *(estimated — fix not yet fully implemented)*
+MFA without fix (retries still firing): **~8–12 s** *(estimated — retries faster at low RTT but still happen)*
+
+**Full workflow projected total (PortalX v2):**
+
+| Scenario | Estimated total |
+|----------|----------------|
+| TOTP fix implemented correctly | **~18–22 s** |
+| TOTP retries still firing | **~25–35 s** |
+
+> These are derived/estimated projections for PortalX v2 only. Real healthcare portals (Brightree, MyCGS) are not included below but addressed separately.
+
+---
+
+### Kubernetes worker pod overhead
+
+Your RPA workers will run as K8s pods on AKS, consuming jobs from a queue. Pod overhead depends on whether the pod is already running or needs to be started.
+
+**Documented K8s pod startup times (Kubernetes SIG Scalability SLO):**
+
+| Phase | Time | Source |
 |---|---|---|
-| CDP overhead per step | ~2.5 s | ~250 ms |
-| patient_search total | 16.48 s | ~3–5 s |
-| prior_auth total | 35.85 s | ~8–12 s |
-| **Full workflow total** | **94.62 s** | **~20–30 s** |
+| Pod scheduling | < 5 s p99 (SLO target) | Kubernetes SIG Scalability SLO |
+| Container start (image cached on node) | ~0 s (image already present) | Kubernetes docs |
+| Container start (image cold pull, 3.59 GB runner) | Dominates — "minutes to seconds" range | Microsoft AKS Artifact Streaming docs |
+| App init (Python process ready) | ~1–3 s for typical Python app | Estimated |
 
-> The cloud column is an estimate derived from the measured per-action latency scaled to ~10 ms RTT. It has not been measured. To get a real number, run `exp_browserbase_latency.py` from a cloud VM in the same region as your Browserbase project.
+**In practice, for long-lived RPA worker pods (the typical pattern):**
 
-The session startup cost (2.9 s) does not change — that is Browserbase spinning up a Chrome instance regardless of where the worker is.
+- **Steady state (pod already running, picking up next job):** essentially zero pod overhead. The pod sits idle between jobs and picks the next off the queue immediately.
+- **Scale-out event (HPA adds a new pod due to load):** 15–30 s before the new pod is ready to process its first job (scheduling + container start + app init). This is a one-time cost per pod, amortized over all jobs that pod processes.
+- **Image pull on a cold node (first pod on a new AKS node):** can take several minutes for the 3.59 GB Playwright image. Using AKS Artifact Streaming or pre-pulling the image via a DaemonSet eliminates this.
+
+**K8s overhead per job (at steady state with pre-warmed pods): ~0 s**
+**K8s overhead per new pod at scale-out: ~15–30 s one-time** *(documented/estimated)*
+
+---
+
+### End-to-end realistic projection: PortalX v2 on AKS → Browserbase East US
+
+This is the closest to your production architecture we can model from current data.
+
+| Component | Time | Type |
+|-----------|------|------|
+| K8s scheduling (steady state) | ~0 s | Documented |
+| Browserbase session create | ~0.96 s | Measured |
+| CDP connect | ~2.0 s | Measured (startup is BB-side, doesn't improve with region) |
+| Workflow (login → confirmation, TOTP fixed) | ~15–19 s | Derived |
+| **Total per job (steady state, TOTP fixed)** | **~18–22 s** | Derived |
+| **Total per job (TOTP retries still firing)** | **~25–35 s** | Derived |
+
+For comparison, our Mac measurement was **79.1 s avg** (post-fix). The projected production improvement is driven almost entirely by the RTT reduction from ~63 ms to ~6 ms.
+
+**Throughput projection (PortalX v2 proxy, TOTP fixed):**
+
+| Workers (Browserbase sessions) | Estimated jobs/hr | Notes |
+|-------------------------------|-------------------|-------|
+| 3 (free tier limit) | ~490–600 | |
+| 25 (Developer plan) | ~4,000–5,000 | 25-way parallel |
+| 100 (Startup plan) | ~16,000–20,000 | 100-way parallel |
+
+> These throughput numbers are derived from the projected 18–22 s per job. They assume PortalX-level portal complexity, no job queue contention, and steady-state pods.
+
+---
+
+### What will be different with real healthcare portals
+
+Real portals (Brightree, MyCGS) are not measured — no numbers here are backed by data. What we know from inspecting them:
+
+| Factor | Impact on timing vs PortalX |
+|--------|---------------------------|
+| SSO / login redirect chain | +2–3 additional page loads |
+| Heavier JS bundles (Angular, full Vuetify app) | Longer `load` wait per page |
+| Document upload fields | Extra form interactions |
+| More AJAX-heavy patient search | Longer debounced wait |
+| Real MFA (authenticator app) | Same TOTP issue applies |
+| Session timeouts shorter than PortalX's 5 min | More session management overhead |
+
+**Conservative real-portal estimate (not measured, purely estimated):**
+
+Each step takes 1.5–3× longer than PortalX due to heavier pages and more interactions. Applying that to the projected totals:
+
+| | PortalX (derived) | Real portal guess range |
+|---|---|---|
+| Per-job total | ~18–22 s | ~30–60 s |
+| Jobs/hr at 25 sessions | ~4,000–5,000 | ~1,500–3,000 |
+
+> **The real portal column is an unvalidated estimate.** Do not use it for capacity planning. Run `exp_browserbase_latency.py` from an AKS pod against a real portal staging environment to get actual numbers.
 
 ---
 
