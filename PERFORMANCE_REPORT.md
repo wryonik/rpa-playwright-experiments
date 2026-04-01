@@ -41,12 +41,20 @@ Ten experiments were run across two phases:
 
 All local experiments ran inside two containers on the same Docker Desktop instance. No resource limits were explicitly set — both containers share the Docker Desktop allocation.
 
+**Host machine:**
+
+| | |
+|---|---|
+| Model | Apple M4 Pro |
+| Physical cores | 14 |
+| Physical RAM | 24 GB |
+
 **Docker Desktop allocation (as seen by containers):**
 
 | Resource | Value |
 |----------|-------|
-| CPUs allocated | **14** |
-| Total RAM allocated | **7.65 GB** (8,024,304 kB) |
+| CPUs allocated | **14** (all cores passed through) |
+| Total RAM allocated | **7.65 GB** (out of 24 GB host RAM) |
 | Available RAM at experiment start | **~6.76 GB** |
 
 **Container configuration (from `docker-compose.yml`):**
