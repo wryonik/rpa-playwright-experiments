@@ -4,6 +4,8 @@ Self-contained experiments measuring Playwright and Browserbase limits for healt
 
 Uses **PortalX** — a synthetic healthcare prior authorization portal that mirrors the real complexity of Brightree/MyCGS: TOTP MFA, Vuetify v-select dropdowns, quick-lookup fields, patient search with match scoring, concurrent session detection, and server error dialogs.
 
+**Live demo:** https://portalx-7nn4.onrender.com · Login: `admin` / `P@ssw0rd!`
+
 All numbers in `PERFORMANCE_REPORT.md` are measured from actual runs, not estimates.
 
 ---
@@ -12,32 +14,35 @@ All numbers in `PERFORMANCE_REPORT.md` are measured from actual runs, not estima
 
 ```
 .
-├── docker-compose.yml          # Isolated experiment stack (site + runner)
-├── PERFORMANCE_REPORT.md       # Full benchmark results with measured numbers
-├── scripts/                    # Experiment scripts
-│   ├── exp_full_workflow.py    # 7-step realistic healthcare workflow (main)
-│   ├── exp_concurrency.py      # Parallel browser scaling (1→16 workers)
+├── docker-compose.yml              # Isolated experiment stack (site + runner)
+├── render.yaml                     # Render.com deployment config (free tier)
+├── PERFORMANCE_REPORT.md           # Full benchmark results with measured numbers
+├── scripts/                        # Experiment scripts
+│   ├── exp_full_workflow.py        # 7-step realistic healthcare workflow (main)
+│   ├── exp_browserbase_latency.py  # Browserbase CDP vs local (both → Render)
+│   ├── exp_browserbase_concurrent.py # N Browserbase sessions in parallel
+│   ├── exp_concurrency.py          # Parallel browser scaling (1→16 workers)
 │   ├── exp_session_persistence.py  # Cookie reuse vs cold login
-│   ├── exp_crash_recovery.py   # Mid-task crash + recovery scenarios
-│   ├── exp_popup_handling.py   # Native alert/confirm/DOM modal handling
-│   ├── exp_long_run.py         # Memory leak measurement (10-min stability)
-│   ├── exp_queue_throughput.py # Job queue drain at varying concurrency
-│   ├── exp_throughput.py       # Workflows/hr benchmark
-│   ├── exp_browserbase_latency.py  # Browserbase CDP vs local Playwright
-│   ├── utils.py                # Shared helpers, ResourceSampler, ExperimentMetrics
+│   ├── exp_crash_recovery.py       # Mid-task crash + recovery scenarios
+│   ├── exp_popup_handling.py       # Native alert/confirm/DOM modal handling
+│   ├── exp_long_run.py             # Memory leak measurement (10-min stability)
+│   ├── exp_queue_throughput.py     # Job queue drain at varying concurrency
+│   ├── exp_throughput.py           # Workflows/hr benchmark
+│   ├── utils.py                    # Shared helpers, ResourceSampler, ExperimentMetrics
 │   └── requirements.txt
-└── site/                       # PortalX v2 synthetic test site
-    ├── server.py               # Python HTTP server (session state, TOTP, error injection)
+└── site/                           # PortalX v2 synthetic test site
+    ├── server.py                   # Python HTTP server (session state, TOTP, error injection)
+    ├── Dockerfile                  # For Render / standalone deployment
     └── pages/
-        ├── login.html          # ASP.NET-style login (#Username, #Password)
-        ├── mfa.html            # TOTP MFA entry (#txtMFACode, paste-blocked)
-        ├── terms.html          # Scroll-to-bottom terms + jurisdiction radio
-        ├── npi_select.html     # Provider NPI table with radio rows
-        ├── patient_search.html # Patient search (LastName/FirstName/DOB, match score col 6)
-        ├── prior_auth.html     # Full PA form: quick-lookup + Vuetify v-select
-        ├── confirmation.html   # Confirmation modal before submit
+        ├── login.html              # ASP.NET-style login (#Username, #Password)
+        ├── mfa.html                # TOTP MFA entry (#txtMFACode, paste-blocked)
+        ├── terms.html              # Scroll-to-bottom terms + jurisdiction radio
+        ├── npi_select.html         # Provider NPI table with radio rows
+        ├── patient_search.html     # Patient search (LastName/FirstName/DOB, match score col 6)
+        ├── prior_auth.html         # Full PA form: quick-lookup + Vuetify v-select
+        ├── confirmation.html       # Confirmation modal before submit
         ├── session_expired.html
-        └── concurrent.html     # Concurrent session error page
+        └── concurrent.html         # Concurrent session error page
 ```
 
 ---
@@ -174,11 +179,28 @@ Results will be added to `PERFORMANCE_REPORT.md` in the Browserbase section.
 
 See `PERFORMANCE_REPORT.md` for full measured data. Headlines:
 
-- **Full 7-step workflow:** 28/30 success (93.3%), avg 7.26s, p95 17.3s at 3 workers
-- **Memory leak:** +340 MB/hr at 4 workers — workers must be recycled before ~6 hours
-- **Session reuse:** 90% login time reduction (0.07s warm vs 0.75s cold) — biggest single ROI improvement
-- **Native dialog handlers mandatory:** `alert()` without `page.on("dialog")` hangs indefinitely
-- **Near-linear queue scaling:** 4 workers → 76.5 jobs/min, 8 workers → 150 jobs/min
+**Local Playwright (Docker):**
+- Full 7-step v2 workflow: **28/30 success (93.3%)**, avg 7.26s, p95 17.3s at 3 workers
+- Memory leak: **+340 MB/hr** at 4 workers — workers OOM at ~5.8 hrs on 2 GB container
+- Session reuse: **90% login time reduction** (0.07s warm vs 0.75s cold)
+- Native dialog handlers mandatory — `alert()` without `page.on("dialog")` hangs indefinitely
+- Queue throughput scales near-linearly: 4 workers → 76.5 jobs/min, 8 workers → 150 jobs/min
+
+**Chrome memory per worker:**
+- **~593 MB per worker** — perfectly linear, no super-linear growth
+- Formula: `max_workers = floor((RAM_MB - 500) / 593)`
+- 8 GB host → **11 safe workers**, 16 GB → **24 safe workers**
+- `shm_size: 2gb` in docker-compose is required — Chrome crashes without it
+
+**Browserbase CDP (both modes → Render):**
+- Sequential (10 runs): **40% success**, avg **94.6s**, p95 **184.1s** vs local avg **12.4s**
+- Overhead vs local: **+665% avg** — but startup cost is only 2.9s (3% of total)
+- Concurrent (3 parallel): **67% success**, wall time **105.7s** (sessions run truly in parallel)
+- Session creation under concurrency: **~0.94s**, consistent — sessions don't interfere
+
+**Root causes of Browserbase failures:**
+1. **Modal timing race** (5/6 failures) — DOM modals appear between dismiss-check and click over high-latency CDP; fix: `wait_for_selector(modal, state="hidden")` before every action
+2. **TOTP boundary expiry** — MFA step averages 20.6s due to retry storms when code expires mid-submit; fix: generate TOTP at last possible moment + boundary check
 
 ---
 
