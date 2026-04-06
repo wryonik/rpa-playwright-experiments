@@ -123,7 +123,7 @@
     }
 
     // Server-side injected alert flag (deterministic via ?popup=alert or random via rate_alert_on_npi)
-    const INJECT_ALERT = 0;  // Replaced by server: INJECT_ALERT=0 or INJECT_ALERT=1
+    const INJECT_ALERT=0;  // Server-replaced — do NOT add spaces, the replace() is literal
     if (INJECT_ALERT) {
       window.addEventListener('load', function() {
         setTimeout(function() {

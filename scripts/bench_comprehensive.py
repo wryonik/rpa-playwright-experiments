@@ -247,15 +247,30 @@ async def section_retry(n: int = 10):
 # ── Section 3: Popup detection + handling ───────────────────────────────────
 
 async def section_popups(n: int = 10):
-    """Track how many popups fire and how long each takes to handle."""
+    """Track how many popups fire and how long each takes to handle.
+
+    Uses forced popup injection via ?popup=alert for alternating runs to get
+    deterministic popup triggers instead of relying on 20% random chance.
+    """
     print("\n" + "="*70)
     print("SECTION 3: Popup Detection + Handling")
     print("="*70)
 
     results = []
-    popup_stats = {"native_dialog": 0, "dom_error_modal": 0, "dom_alert_modal": 0}
+    popup_stats = {"native_dialog": 0, "dom_error_modal": 0, "dom_alert_modal": 0,
+                   "forced_alert_fired": 0, "forced_error_fired": 0}
 
     for i in range(n):
+        # Rotate through forced popup modes to exercise all paths
+        mode = ["alert", "error", None][i % 3]  # 1/3 force alert, 1/3 force error, 1/3 random
+        forced_site = PUBLIC_SITE
+        if mode == "alert":
+            npi_site = f"{PUBLIC_SITE}/npi?popup=alert"
+        elif mode == "error":
+            npi_site = None  # set later on prior_auth nav
+        else:
+            npi_site = None
+
         session_id, connect_url = await new_bb_session()
         dialog_count = 0
         modal_handled = []
@@ -271,7 +286,6 @@ async def section_popups(n: int = 10):
                 asyncio.create_task(d.accept())
             page.on("dialog", dialog_handler)
 
-            # Run workflow — track popup handling times inline
             wf.SITE = PUBLIC_SITE
             page.set_default_timeout(15000)
 
@@ -282,6 +296,10 @@ async def section_popups(n: int = 10):
 
                 await wf.step_mfa(page)
                 await wf.step_terms(page)
+
+                # If forcing alert popup, navigate to NPI with ?popup=alert
+                if mode == "alert":
+                    await page.goto(f"{PUBLIC_SITE}/npi?popup=alert", wait_until="domcontentloaded")
 
                 # Check for error modal before NPI step
                 t_modal = time.perf_counter()
@@ -294,20 +312,45 @@ async def section_popups(n: int = 10):
                     except Exception:
                         pass
 
-                await wf.step_npi(page)
-
-                # Alert modal on NPI page (20% chance)
-                t_modal = time.perf_counter()
-                alert_mod = page.locator("#alert-modal.active")
-                if await alert_mod.count() > 0:
+                # If forcing an alert, explicitly wait for it to appear before NPI step
+                if mode == "alert":
+                    t_modal = time.perf_counter()
                     try:
+                        await page.locator("#alert-modal.active").wait_for(state="visible", timeout=3000)
                         await page.locator("#alert-modal.active .modal-ok").click(timeout=2000)
                         popup_stats["dom_alert_modal"] += 1
-                        modal_handled.append({"type": "dom_alert", "handle_time": round(time.perf_counter()-t_modal,3)})
-                    except Exception:
-                        pass
+                        popup_stats["forced_alert_fired"] += 1
+                        modal_handled.append({"type": "dom_alert_forced", "handle_time": round(time.perf_counter()-t_modal,3)})
+                    except Exception as e:
+                        print(f"    forced alert did not appear: {e}")
+
+                await wf.step_npi(page)
+
+                # Also handle any random alert modal that may have fired (non-forced)
+                try:
+                    alert_loc = page.locator("#alert-modal.active")
+                    if await alert_loc.count() > 0:
+                        t_modal = time.perf_counter()
+                        await page.locator("#alert-modal.active .modal-ok").click(timeout=2000)
+                        popup_stats["dom_alert_modal"] += 1
+                        modal_handled.append({"type": "dom_alert_random", "handle_time": round(time.perf_counter()-t_modal,3)})
+                except Exception:
+                    pass
 
                 await wf.step_patient_search(page)
+
+                # If forcing error popup, navigate to prior-auth with ?popup=error
+                if mode == "error":
+                    await page.goto(f"{PUBLIC_SITE}/prior-auth?popup=error", wait_until="domcontentloaded")
+                    t_modal = time.perf_counter()
+                    try:
+                        await page.locator("#error-modal.active").wait_for(state="visible", timeout=3000)
+                        await page.locator("#error-modal.active .modal-ok, #error-modal-ok").click(timeout=2000)
+                        popup_stats["dom_error_modal"] += 1
+                        popup_stats["forced_error_fired"] += 1
+                        modal_handled.append({"type": "dom_error_forced", "handle_time": round(time.perf_counter()-t_modal,3)})
+                    except Exception as e:
+                        print(f"    forced error modal did not appear: {e}")
                 await wf.step_prior_auth_form(page)
                 _, ref = await wf.step_confirmation(page)
                 ok = True
