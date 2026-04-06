@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>PortalX — Prior Auth Status</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; background: #c8c8c8; margin: 0; font-size: 13px; }
+    .header { background: #003366; color: white; padding: 8px 16px; font-size: 15px; font-weight: bold; }
+    .header span { font-size: 11px; font-weight: normal; display: block; color: #aaccff; }
+    .nav { background: #2a4b74; padding: 4px 16px; font-size: 11px; }
+    .nav a { color: white; text-decoration: none; margin-right: 16px; }
+    .nav a:hover { text-decoration: underline; }
+    .container { max-width: 720px; margin: 40px auto; background: white; border: 1px solid #999; box-shadow: 2px 2px 6px rgba(0,0,0,0.3); }
+    .section-header { background: #336699; color: white; padding: 10px 18px; font-size: 14px; font-weight: bold; }
+    .body { padding: 22px 24px; }
+    .search-box { margin-bottom: 24px; }
+    .search-box label { display: block; font-weight: bold; margin-bottom: 6px; font-size: 12px; color: #444; }
+    .search-box input { width: 280px; padding: 7px; border: 1px solid #aaa; font-size: 13px; font-family: monospace; }
+    .search-btn { background: linear-gradient(to bottom, #4a7ab5, #2c5f9e); color: white; border: 1px solid #1a4a80; padding: 7px 20px; font-size: 12px; cursor: pointer; margin-left: 8px; }
+    .result-box { background: #f5f8ff; border: 1px solid #c5d5ea; padding: 16px 20px; margin-top: 10px; }
+    .detail-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .detail-table td { padding: 6px 8px; border-bottom: 1px solid #eee; }
+    .detail-table td:first-child { font-weight: bold; color: #444; width: 180px; }
+    .detail-table td:last-child { color: #333; }
+    .status-badge { display: inline-block; padding: 3px 10px; border-radius: 3px; font-weight: bold; font-size: 11px; }
+    .status-pending { background: #fff4d6; color: #b07000; border: 1px solid #e0b85c; }
+    .status-approved { background: #d6f4d6; color: #006600; border: 1px solid #66b866; }
+    .status-denied { background: #f4d6d6; color: #990000; border: 1px solid #c66666; }
+    .status-info { background: #d6e8f4; color: #004080; border: 1px solid #6696c6; }
+    .status-review { background: #e8d6f4; color: #4a0080; border: 1px solid #966cc6; }
+    .not-found { background: #fff0f0; border: 1px solid #e0a0a0; padding: 14px; color: #990000; font-size: 12px; }
+    .footer { background: #e8edf2; border-top: 1px solid #bbb; padding: 6px 16px; font-size: 10px; color: #666; text-align: center; }
+    .error { color: #cc0000; font-size: 11px; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    PortalX CGS Prior Authorization Portal
+    <span>Jurisdiction C — Status Lookup</span>
+  </div>
+  <div class="nav">
+    <a href="/patient-search">New Request</a>
+    <a href="/status">Check Status</a>
+    <a href="/audit">Audit Log</a>
+    <a href="/login">Logout</a>
+  </div>
+  <div class="container">
+    <div class="section-header">Prior Authorization Status Lookup</div>
+    <div class="body">
+      <form method="POST" action="/status">
+        <div class="search-box">
+          <label for="ref_number">Authorization Reference Number</label>
+          <input type="text" id="ref_number" name="ref_number" value="{{PREFILL_REF}}" placeholder="PA-XXXXXXXX" autofocus>
+          <button type="submit" class="search-btn" id="lookup-btn">Look Up</button>
+          <div class="error" id="lookup-error" style="display:none">Reference number not found. Please verify and try again.</div>
+        </div>
+      </form>
+
+      <div id="result-container" style="display:none">
+        <div class="result-box">
+          <table class="detail-table">
+            <tr><td>Reference Number</td><td id="result-ref" style="font-family:monospace;font-weight:bold"></td></tr>
+            <tr><td>Status</td><td><span id="result-status" class="status-badge"></span></td></tr>
+            <tr><td>Patient</td><td id="result-patient"></td></tr>
+            <tr><td>DOB</td><td id="result-dob"></td></tr>
+            <tr><td>HCPCS Code</td><td id="result-hcpcs"></td></tr>
+            <tr><td>ICD-10</td><td id="result-icd10"></td></tr>
+            <tr><td>Submitted By</td><td id="result-submitter"></td></tr>
+            <tr><td>Submitted At</td><td id="result-submitted"></td></tr>
+            <tr><td>Documents Attached</td><td id="result-docs"></td></tr>
+          </table>
+        </div>
+      </div>
+
+      <div id="not-found" class="not-found" style="display:none">
+        <strong>Not Found:</strong> <span id="not-found-msg"></span>
+      </div>
+    </div>
+    <div class="footer">© 2024 CGS Administrators, LLC. All rights reserved.</div>
+  </div>
+
+  <script>
+    const STATUS_CLASSES = {
+      "Pending Review": "status-pending",
+      "Approved": "status-approved",
+      "Denied": "status-denied",
+      "Additional Info Required": "status-info",
+      "In Review": "status-review"
+    };
+
+    async function lookupRef(ref) {
+      if (!ref) return;
+      const resp = await fetch(`/api/status?ref=${encodeURIComponent(ref)}`);
+      const data = await resp.json();
+      const resultDiv = document.getElementById('result-container');
+      const notFoundDiv = document.getElementById('not-found');
+      const errDiv = document.getElementById('lookup-error');
+
+      if (data.found) {
+        const r = data.record;
+        document.getElementById('result-ref').textContent = r.ref_id;
+        const statusEl = document.getElementById('result-status');
+        statusEl.textContent = r.status;
+        statusEl.className = 'status-badge ' + (STATUS_CLASSES[r.status] || 'status-pending');
+        document.getElementById('result-patient').textContent = r.patient_name || '—';
+        document.getElementById('result-dob').textContent = r.dob || '—';
+        document.getElementById('result-hcpcs').textContent = r.hcpcs || '—';
+        document.getElementById('result-icd10').textContent = r.icd10 || '—';
+        document.getElementById('result-submitter').textContent = r.submitted_by || '—';
+        const dt = new Date(r.submitted_at * 1000);
+        document.getElementById('result-submitted').textContent = dt.toLocaleString();
+        document.getElementById('result-docs').textContent = (r.uploaded_files || []).length;
+        resultDiv.style.display = 'block';
+        notFoundDiv.style.display = 'none';
+        errDiv.style.display = 'none';
+      } else {
+        resultDiv.style.display = 'none';
+        notFoundDiv.style.display = 'block';
+        document.getElementById('not-found-msg').textContent = data.message || ('No record for ' + ref);
+      }
+    }
+
+    // Auto-lookup if ref is in URL
+    const params = new URLSearchParams(window.location.search);
+    const ref = params.get('ref');
+    if (ref) {
+      document.getElementById('ref_number').value = ref;
+      lookupRef(ref);
+    }
+  </script>
+</body>
+</html>

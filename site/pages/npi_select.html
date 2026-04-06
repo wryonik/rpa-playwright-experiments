@@ -122,8 +122,9 @@
       document.getElementById('npi-submit').disabled = false;
     }
 
-    // Random alert modal (20% chance) — mirrors MyCGS random alert modals
-    if (Math.random() < 0.20) {
+    // Server-side injected alert flag (deterministic via ?popup=alert or random via rate_alert_on_npi)
+    const INJECT_ALERT = 0;  // Replaced by server: INJECT_ALERT=0 or INJECT_ALERT=1
+    if (INJECT_ALERT) {
       window.addEventListener('load', function() {
         setTimeout(function() {
           document.getElementById('alert-modal').classList.add('active');
