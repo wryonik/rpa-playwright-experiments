@@ -21,6 +21,7 @@ All numbers in `PERFORMANCE_REPORT.md` are measured from actual runs, not estima
 │   ├── exp_full_workflow.py        # 7-step realistic healthcare workflow (main)
 │   ├── exp_browserbase_latency.py  # Browserbase CDP vs local (both → Render)
 │   ├── exp_browserbase_concurrent.py # N Browserbase sessions in parallel
+│   ├── exp_steel_latency.py        # Steel Browser CDP vs local (self-hosted)
 │   ├── exp_concurrency.py          # Parallel browser scaling (1→16 workers)
 │   ├── exp_session_persistence.py  # Cookie reuse vs cold login
 │   ├── exp_crash_recovery.py       # Mid-task crash + recovery scenarios
@@ -154,6 +155,19 @@ docker exec exp_runner python3 -c "import time; print(str(int(time.time() // 30)
 
 ---
 
+## Platform Benchmarks
+
+Three experiment scripts cover the three browser backends side-by-side:
+
+| Script | Platform A | Platform B |
+|--------|-----------|-----------|
+| `exp_browserbase_latency.py` | Local Playwright | Browserbase (cloud CDP) |
+| `exp_steel_latency.py` | Local Playwright | Steel Browser (self-hosted CDP) |
+
+Both scripts report per-step timing breakdowns, session startup overhead, and p95 comparisons so results are directly comparable across all three backends.
+
+---
+
 ## Browserbase Support
 
 `exp_browserbase_latency.py` connects to Browserbase via CDP and measures:
@@ -172,6 +186,35 @@ docker exec \
 ```
 
 Results will be added to `PERFORMANCE_REPORT.md` in the Browserbase section.
+
+---
+
+## Steel Browser Support
+
+`exp_steel_latency.py` connects to [Steel Browser](https://github.com/steel-dev/steel-browser) — a self-hosted open-source browser API — via CDP and measures the same metrics as the Browserbase experiment.
+
+Steel runs inside the `docker compose` stack as the `steel-browser` service (no API key needed).
+
+```bash
+# Start the full stack (includes Steel Browser)
+docker compose up -d
+
+# Run Steel latency experiment (10 iterations, both modes)
+docker exec exp_runner python3 exp_steel_latency.py --iterations 10
+
+# Steel-only (skip local Playwright runs)
+docker exec exp_runner python3 exp_steel_latency.py --steel-only
+
+# Local-only (baseline, no Steel)
+docker exec exp_runner python3 exp_steel_latency.py --local-only
+```
+
+Steel Browser UI and API are available on the host at:
+- REST API: `http://localhost:3001`
+- Session viewer (live screen + logs): `http://localhost:3001/ui`
+- CDP: `ws://localhost:9223`
+
+> **Note:** The `DOMAIN=localhost:3001` env var is required for the live session viewer in the UI to work. Without it, the browser cannot connect to the session's websocket (Steel returns its internal Docker address `0.0.0.0:3000` instead of the host-reachable one).
 
 ---
 

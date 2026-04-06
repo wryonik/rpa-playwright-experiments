@@ -25,9 +25,78 @@ services:
       timeout: 4s
       retries: 8
 
+  # ── Steel Browser pool ────────────────────────────────────────────────────
+  # The open-source Steel container supports ONE active session per instance.
+  # For concurrency, run N instances — each gets its own Chrome + session slot.
+  # Formula: max_concurrent_sessions = number of steel-browser-N services.
+  #
+  # RAM budget per instance: ~600 MB Chrome + ~100 MB Node = ~700 MB.
+  # 8 GB host → safe max ~10 instances. 16 GB → ~20 instances.
+  #
+  # UI for each instance: http://localhost:300N/ui
+  # exp_steel_concurrent.py reads STEEL_POOL (comma-separated URLs).
+
+  steel-browser-1:
+    image: ghcr.io/steel-dev/steel-browser
+    container_name: exp_steel_1
+    ports:
+      - "3001:3000"
+      - "9221:9222"
+    environment:
+      - DOMAIN=localhost:3001
+      - LOG_STORAGE_ENABLED=true
+      - LOG_STORAGE_PATH=/app/data/steel.duckdb
+    volumes:
+      - steel-recordings-1:/app/data
+    shm_size: "2gb"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -qO- http://localhost:3000/v1/sessions || exit 1"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+      start_period: 10s
+
+  steel-browser-2:
+    image: ghcr.io/steel-dev/steel-browser
+    container_name: exp_steel_2
+    ports:
+      - "3002:3000"
+      - "9222:9222"
+    environment:
+      - DOMAIN=localhost:3002
+      - LOG_STORAGE_ENABLED=true
+      - LOG_STORAGE_PATH=/app/data/steel.duckdb
+    volumes:
+      - steel-recordings-2:/app/data
+    shm_size: "2gb"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -qO- http://localhost:3000/v1/sessions || exit 1"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+      start_period: 10s
+
+  steel-browser-3:
+    image: ghcr.io/steel-dev/steel-browser
+    container_name: exp_steel_3
+    ports:
+      - "3003:3000"
+      - "9223:9222"
+    environment:
+      - DOMAIN=localhost:3003
+      - LOG_STORAGE_ENABLED=true
+      - LOG_STORAGE_PATH=/app/data/steel.duckdb
+    volumes:
+      - steel-recordings-3:/app/data
+    shm_size: "2gb"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -qO- http://localhost:3000/v1/sessions || exit 1"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+      start_period: 10s
+
   # ── Experiment runner ──────────────────────────────────────────────────────
-  # Python container with Playwright + psutil installed.
-  # Mount the scripts directory and run any experiment.
   exp-runner:
     image: mcr.microsoft.com/playwright/python:v1.50.0-noble
     container_name: exp_runner
@@ -35,18 +104,27 @@ services:
     volumes:
       - ./scripts:/experiments
     environment:
-      - SITE_URL=http://portalx-site:80
+      - SITE_URL=http://portalx-site:8888
+      - STEEL_API_URL=http://steel-browser-1:3000         # default single-instance URL
+      - STEEL_POOL=http://steel-browser-1:3000,http://steel-browser-2:3000,http://steel-browser-3:3000
       - PYTHONDONTWRITEBYTECODE=1
       - PYTHONUNBUFFERED=1
     depends_on:
       portalx-site:
         condition: service_healthy
-    # Default: just tail so the container stays up and you can exec into it.
-    # Override the command to run a specific experiment.
+      steel-browser-1:
+        condition: service_healthy
+      steel-browser-2:
+        condition: service_healthy
+      steel-browser-3:
+        condition: service_healthy
     command: tail -f /dev/null
-    # To run a specific experiment directly:
-    #   docker compose -f experiments/docker-compose.experiments.yml run --rm exp-runner python exp_concurrency.py
-    shm_size: "2gb"    # Chrome needs large /dev/shm to avoid crashes
+    shm_size: "2gb"
+
+volumes:
+  steel-recordings-1:
+  steel-recordings-2:
+  steel-recordings-3:
 
 networks:
   default:
