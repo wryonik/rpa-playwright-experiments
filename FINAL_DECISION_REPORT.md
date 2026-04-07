@@ -38,7 +38,7 @@
 | **Observability** | Audit trail | BB: built-in dashboard + replay URL; self-hosted: PortalX `/api/audit` endpoint we built |
 | **Observability** | Screenshot on failure | Both: `page.screenshot()` works identically |
 | **Observability** | Network logs | BB: dashboard out-of-box; self-hosted: needs Playwright tracing setup |
-| **Observability** | Live session viewer | BB: dashboard out-of-box; self-hosted: requires Steel Browser or custom CDP bridge |
+| **Observability** | Live session viewer | BB: dashboard out-of-box; self-hosted: requires custom CDP bridge or open-source viewer |
 
 ---
 
@@ -98,9 +98,11 @@ Implementation pattern: classify error → retry once for `transient_*` → die 
 
 **Bottlenecks:** At 10+ concurrent from a single IP, the **target site** is the limit, not our infrastructure. The VM was using 35 MB RAM and 0.3% CPU when this happened.
 
-For self-hosted to match Browserbase's 25-concurrent capability, you need:
-- Distributed IPs (residential proxy service: $300-500/mo for moderate volume)
+For self-hosted to match Browserbase's 25-concurrent capability against a portal that IP-blocks, you need:
+- A residential proxy service ($30-500/mo depending on volume)
 - OR a lenient target site (most enterprise B2B portals are this — they don't IP-block legitimate authenticated users)
+
+Browserbase **already includes distributed IPs** as part of the $20/mo plan — no separate proxy purchase needed.
 
 ### 4. Session reuse — login once, batch lookups (10 patients)
 
@@ -192,7 +194,7 @@ PortalX v3 now records every login, MFA, terms acceptance, NPI selection, patien
 | Chrome updates | Managed by BB | Manual (apt update, Playwright install) |
 | Browser binary management | None | We maintain |
 | Dependency management | Just the SDK | Playwright + Chrome + system libs |
-| Session lifecycle | API-managed | DIY (or Steel Browser) |
+| Session lifecycle | API-managed | DIY (Chrome process supervisor) |
 | Memory leak watchdog | Built-in | DIY (cron restart, monitoring) |
 
 **The maintenance delta is real but small.** A handful of cron jobs and a Dockerfile cover most of it. The annoying part is keeping Chrome and Playwright versions in sync, which can break unexpectedly.
@@ -203,7 +205,7 @@ PortalX v3 now records every login, MFA, terms acceptance, NPI selection, patien
 |--------|---|---|
 | Practical concurrent limit | 25 (Dev plan) → 100 (Startup) → 250+ (Scale) | RAM-bound (~30/VM at this size, more with scale-out) |
 | Bandwidth | Included | Outbound from VM (effectively free at our scale) |
-| IP distribution | Built-in (cloud IPs) | Single VM IP (can add residential proxies) |
+| IP distribution | **Built-in (cloud IPs, no extra cost)** | Single VM IP — add residential proxies if portal IP-blocks |
 | Throughput at 10 workers | 15.4 wf/min | Same — limited by target site, not infra |
 
 **Neither platform has a fundamental scale advantage for our workload.** Browserbase removes the IP rotation problem if (and only if) the target portal blocks based on IP. For our actual targets (Brightree, MyCGS, Availity), per-account rate limiting is far more common than per-IP blocks for legitimate authenticated traffic.
@@ -214,8 +216,8 @@ This is where Browserbase actually wins out-of-the-box, but only on convenience:
 
 | Feature | Browserbase | Self-hosted |
 |---------|---|---|
-| Live screen viewer | ✓ Dashboard | Requires Steel Browser or custom CDP bridge |
-| Session replay (rrweb) | ✓ Dashboard | Steel Browser provides this for free |
+| Live screen viewer | ✓ Dashboard | Custom CDP bridge or open-source viewer |
+| Session replay (rrweb) | ✓ Dashboard | DIY (rrweb-record + rrweb-player, ~1 day to set up) |
 | Network log capture | ✓ Dashboard | Playwright tracing or `page.on('response')` |
 | Console log capture | ✓ Dashboard | `page.on('console')` |
 | DOM inspector | ✓ Dashboard | Playwright tracing or DevTools |
@@ -231,7 +233,7 @@ This is where Browserbase actually wins out-of-the-box, but only on convenience:
 ### Self-hosted on the existing VM (Azure D16s_v5, ~$330-560/mo)
 - VM is **already paid for** by other workloads. Marginal cost: **$0**.
 - Capacity headroom: at least 10 concurrent Chrome instances with negligible resource use.
-- If we need distributed IPs: residential proxies start at **$30-100/mo** (Oxylabs Starter $30 for 5 GB, IPRoyal $52 for 10 GB) and scale to **$300-500/mo** at moderate volume.
+- If a target portal IP-blocks legitimate authenticated users (rare for B2B healthcare portals), residential proxies start at **$30-100/mo** (Oxylabs Starter $30 for 5 GB, IPRoyal $52 for 10 GB) and scale to **$300-500/mo** at moderate volume. **Browserbase already includes distributed IPs in the $20/mo plan**, so this is a self-hosted-only cost.
 
 ### Browserbase
 | Plan | Monthly | Concurrent | Browser-hours |
@@ -286,8 +288,228 @@ At 10x scale (~120k workflows/month), the math flips: Browserbase would need the
 3. **Retry + error classification helper** — 30 LOC, reusable in production code.
 4. **Audit log infrastructure** — server-side per-session log + UI page. Works for compliance even if we go with Browserbase.
 5. **Failure screenshot capture** — one helper that grabs screenshot + URL + error + classified type and dumps to disk for post-mortem.
-6. **Single-session limit awareness** — Steel (open-source) is one-session-per-container. Useful to know if we ever evaluate Steel Cloud.
-7. **The `api_timeout` SDK gotcha documented** — the 5-min phantom disconnect that actually came from a Python SDK ergonomics bug. This alone could save a week of production debugging.
+6. **The `api_timeout` SDK gotcha documented** — the 5-min phantom disconnect that actually came from a Python SDK ergonomics bug. This alone could save a week of production debugging.
+
+---
+
+## Recommended Production Architecture
+
+The decision between Browserbase and self-hosted Playwright should not be a one-way door. Both have legitimate use cases — and at the level of granularity that matters (per-portal, per-client), the right answer can be different at the same time. The architecture below makes the choice a **runtime configuration**, not a code change.
+
+### Goals
+
+1. **Backend-agnostic workflows** — the same workflow code runs against either Browserbase or local Playwright. No `if browserbase:` branches in business logic.
+2. **Per-portal and per-client routing** — the backend is selected at runtime based on which portal we're hitting and which client we're running for.
+3. **Generic error handling** — the most common failure modes (modals, dialogs, server errors, navigation timeouts, session expiry) are handled once at the framework level. Site-specific quirks are handled in portal adapters that extend or override the defaults.
+4. **First-class retry + recovery** — every workflow gets retry-on-transient and recover-on-failure for free.
+
+### Layered architecture
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                        WORKFLOW DEFINITION                         │  ← portal-agnostic
+│  e.g. "look up status for patient X" — pure intent, no selectors   │     business logic
+└─────────────────────────────────┬──────────────────────────────────┘
+                                  │
+┌─────────────────────────────────▼──────────────────────────────────┐
+│                          PORTAL ADAPTER                            │  ← per-portal
+│  - selectors, step sequences, login flow                           │     site knowledge
+│  - site-specific error handler overrides (extends defaults)        │
+│  e.g. PortalXAdapter, BrightreeAdapter, MyCgsAdapter               │
+└─────────────────────────────────┬──────────────────────────────────┘
+                                  │
+┌─────────────────────────────────▼──────────────────────────────────┐
+│                         WORKFLOW RUNNER                            │  ← framework
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │  GLOBAL ERROR HANDLERS (run on every workflow)               │  │
+│  │  • native dialogs  → auto-accept (alert/confirm/prompt)      │  │
+│  │  • DOM modals      → dismiss (#error-modal, #alert-modal,    │  │
+│  │                       generic [role=alertdialog])            │  │
+│  │  • server errors   → retry once (transient_server)           │  │
+│  │  • nav timeouts    → retry once (transient_timeout)          │  │
+│  │  • concurrent sess → retry with fresh session                │  │
+│  │  • session expired → re-login + restart from last good step  │  │
+│  │  • selector miss   → permanent failure (after retry)         │  │
+│  │  • unknown errors  → permanent failure (after one retry)     │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │  RECOVERY HOOK (runs before failure is reported)             │  │
+│  │  • screenshot                                                │  │
+│  │  • DOM snapshot                                              │  │
+│  │  • console + network log dump                                │  │
+│  │  • write entry to audit log                                  │  │
+│  │  • emit metric (success / retry / permanent fail by class)   │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────┬──────────────────────────────────┘
+                                  │
+┌─────────────────────────────────▼──────────────────────────────────┐
+│                          BACKEND ROUTER                            │  ← runtime decision
+│  router.pick(portal="brightree", client="acme_dme") → backend      │     based on config
+└──────┬──────────────────────────────────────────────┬──────────────┘
+       │                                              │
+┌──────▼─────────────┐                       ┌────────▼─────────────┐
+│  BrowserbaseBackend│                       │   LocalBackend       │
+│  - cloud Chrome    │                       │  - VM Playwright     │
+│  - distributed IPs │                       │  - single VM IP      │
+│    (built-in)      │                       │    (or residential   │
+│  - dashboard       │                       │     proxy if config) │
+│  - replay UI       │                       │  - DIY observability │
+└────────────────────┘                       └──────────────────────┘
+```
+
+Each layer has one job. The workflow doesn't know which backend it ran on. The backend doesn't know which portal it's hitting. The router doesn't know what the workflow does. Everything is composable.
+
+### Backend routing — two equally valid options
+
+| Option | Routing key | When to use |
+|--------|-------------|-------------|
+| **A. Per-portal routing** | `portal_id` only | Most teams. The backend choice is driven by what the *target portal* requires (e.g., Brightree blocks IPs → BB; MyCGS doesn't → local). All clients hitting the same portal share the same backend. |
+| **B. Per-portal + per-client routing with override** | `(portal_id, client_id)` tuple | When a specific client has constraints other clients don't (e.g., HIPAA-strict client demands data residency on our infra). Falls back to the portal default if no override is set. |
+
+A YAML config example covering both styles:
+
+```yaml
+# Default backend for the whole platform
+default_backend: browserbase
+
+# Per-portal defaults (Option A)
+portals:
+  brightree:
+    backend: browserbase           # IP rotation matters here
+    concurrency_limit: 10
+    api_timeout: 3600
+  mycgs:
+    backend: local                 # known to be lenient on IP
+    concurrency_limit: 5
+  availity:
+    backend: browserbase
+    concurrency_limit: 8
+  portalx:
+    backend: local                 # our test site
+
+# Per-client overrides (Option B) — overrides portal default for that client
+client_overrides:
+  acme_dme:
+    # this client demands self-hosted for compliance
+    force_backend: local
+  beta_clinic:
+    # this client is on Browserbase even for portals where we use local by default
+    portals:
+      mycgs:
+        backend: browserbase
+```
+
+The router resolves in this order: client override → portal default → global default. A single function:
+
+```
+resolve_backend(portal, client) →
+  if config.client_overrides[client].portals[portal]: use it
+  else if config.client_overrides[client].force_backend: use it
+  else if config.portals[portal].backend: use it
+  else: config.default_backend
+```
+
+This means: for 95% of cases, set the per-portal backend and forget about it. For the 5% of clients with special requirements, add an override. No code changes needed when the routing changes — just edit the YAML.
+
+### Error handling — two-level dispatch
+
+Errors are intercepted in **two layers**:
+
+**Layer 1 — Global handlers (in the runner)**
+
+These run on every workflow regardless of which portal is being hit. They cover failure modes that look the same on every site:
+
+| Error class | Detection | Default action |
+|---|---|---|
+| `transient_timeout` | Playwright `TimeoutError` on navigation/click/wait | retry once with fresh session |
+| `transient_server` | Page contains 500/502/503 markers, or alert text matches `/server.error/i` | retry once |
+| `transient_concurrent` | URL contains `/concurrent` or matches portal's concurrent-session redirect | release session, get fresh one, retry |
+| `transient_network` | `net::ERR_*` errors | retry once |
+| `session_expired` | URL matches portal's session-expired pattern OR `/login` redirect mid-flow | re-login → resume from last completed step |
+| `permanent_selector` | Element not found after retry | fail, capture state, alert |
+| `permanent_auth` | Login attempt rejected | fail immediately, no retry |
+| `unknown` | Anything else | retry once, then fail |
+
+The runner also auto-installs:
+- A `page.on("dialog")` handler that accepts native `alert()`, `confirm()`, `prompt()` so they don't freeze the browser
+- A periodic check for known DOM modal patterns (`#error-modal.active`, `[role=alertdialog]`, `.modal.show`) that dismisses them if found
+
+These handlers cover ~80% of real-world RPA failures across any portal. They're written **once** in the runner and inherited by every workflow.
+
+**Layer 2 — Portal-specific overrides (in portal adapters)**
+
+A portal adapter can:
+- **Add** a handler for a pattern unique to that site (e.g., Brightree's `xmlHttp.status: 500` JS alert with a specific button to click)
+- **Override** a default handler for that portal only (e.g., MyCGS uses a non-standard session-expired redirect that needs custom detection)
+- **Extend** the recovery hook with site-specific data capture (e.g., dump Vuetify component state)
+
+A portal adapter is roughly:
+
+```
+class PortalXAdapter(PortalAdapter):
+    base_url = "https://portalx-7nn4.onrender.com"
+
+    custom_error_patterns = [
+        # only this site uses these — augments the global list
+        ErrorPattern(
+            name="portalx_concurrent",
+            url_match="/concurrent",
+            classification="transient_concurrent",
+        ),
+    ]
+
+    async def login(self, page, credentials): ...
+    async def navigate_to(self, page, intent): ...
+    async def submit_prior_auth(self, page, data): ...
+    async def lookup_status(self, page, ref_id): ...
+
+    # Optional: override default recovery
+    async def on_failure(self, page, error_class):
+        await super().on_failure(page, error_class)
+        # also dump portal-specific state
+        await page.evaluate("window.__VUE_APP__?.$store?.state")
+```
+
+Adding a new portal = subclass `PortalAdapter`, fill in the selectors and step sequences, optionally add custom error patterns. Workflow code never changes.
+
+### Recovery hook
+
+Every failure (after retry has been exhausted, but before throwing) goes through a **recovery hook** that captures everything needed for post-mortem in one place:
+
+1. Screenshot of the current page
+2. DOM HTML snapshot
+3. Last 50 console logs
+4. Last 50 network requests with status codes
+5. The full error chain + classification
+6. The portal, client, workflow, step name, and run ID
+7. Browserbase session replay URL (if backend == BB)
+8. Audit log entries from PortalX `/api/audit` (if available)
+
+All of this gets written to a single `failures/{run_id}.json` + `failures/{run_id}.png` so an engineer (or AI agent) can debug a failed run from one bundle.
+
+This hook is implemented **once** in the runner and runs identically regardless of backend. It's the layer that gives us "observability when RPAs break" — we already have the screenshot piece working in `bench_comprehensive.py`; the rest is straightforward.
+
+### Retry semantics
+
+The runner's default retry policy:
+
+- **Transient** errors → retry once with a **fresh** session (new browser context)
+- **Permanent** errors → fail immediately, no retry
+- **Unknown** errors → retry once, then treat as permanent
+- A workflow can override this per-step if needed (e.g., "retry MFA up to 3 times because TOTP boundary races")
+
+The retry happens at the **workflow level**, not at the step level by default. Step-level retry tends to cause weird mid-workflow state where you've half-submitted a form. Restarting the whole workflow with a fresh session is almost always the safer recovery, and at our latency budget it's affordable.
+
+### What this buys us
+
+- **One config flag flips a portal between BB and self-hosted.** No code change. No deploy. Edit YAML, restart runner.
+- **One client can run on a different backend than the rest.** Compliance overrides are routine.
+- **Adding a new portal = one new file** (the adapter). Existing global error handling, retry, and recovery just work.
+- **Fixing a common error fixes it for every portal.** Add a new pattern to the global handler list once.
+- **Migration from BB to self-hosted (or back) is a 30-second config change**, not a refactor.
+- **The 7 things we already validated** (retry, popups, autologout, idle resilience, file upload, audit, screenshots) all become first-class framework features instead of one-off helpers.
+
+The architecture is deliberately **boring**. There's no clever DI container, no plugin registry, no event bus. Three classes (`PortalAdapter`, `WorkflowRunner`, `BrowserBackend`) and a YAML file. Anyone on the team can read it in 10 minutes and add a new portal in an afternoon.
 
 ---
 
@@ -295,9 +517,9 @@ At 10x scale (~120k workflows/month), the math flips: Browserbase would need the
 
 **Start with Browserbase Developer ($20/mo).** Use it for our first production batch (likely under 12K workflows/month). Treat the BB dashboard as our debugging UI.
 
-In parallel, **keep `bench_comprehensive.py` and the audit log infrastructure** so that if/when we hit the cost crossover (~50-100K workflows/month or specific data residency needs), the migration to self-hosted is one config flag and a new pool manager — not a six-week project.
+In parallel, **build the production runner with the architecture above** so the choice becomes a YAML config rather than a code path. That way, when a specific portal needs self-hosted (or a specific client demands data residency), it's a one-line change. When we hit the cost crossover (~50-100K workflows/month), migrating workloads off BB is the same one-line change — no rewrite, no six-week project.
 
-**Don't pay for proxy services until we have evidence a real target portal IP-blocks us.** Most enterprise healthcare portals don't.
+**Don't pay for residential proxy services until we have evidence a real target portal IP-blocks us.** Most enterprise healthcare portals don't. Note: this is only relevant for the self-hosted path — Browserbase already provides distributed cloud IPs as part of its plan.
 
 ---
 
@@ -316,5 +538,4 @@ All measured outputs are committed to the repo at:
 | `/tmp/bench_vm_results/screenshots/` | Auto-captured failure screenshots |
 
 Earlier reports retained for context:
-- `STEEL_BENCHMARK_REPORT.md` — self-hosted Steel Browser benchmarks
 - `BROWSERBASE_BENCHMARK_REPORT.md` — full BB latency / concurrency / session reuse analysis
