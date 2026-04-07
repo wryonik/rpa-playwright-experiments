@@ -34,6 +34,7 @@ import exp_full_workflow as wf
 PUBLIC_SITE = os.getenv("PUBLIC_SITE_URL", "https://portalx-7nn4.onrender.com")
 BB_API_KEY = os.getenv("BROWSERBASE_API_KEY", "")
 BB_PROJECT_ID = os.getenv("BROWSERBASE_PROJECT_ID", "")
+USE_LOCAL = os.getenv("USE_LOCAL", "0") == "1"  # use local chromium instead of BB
 OUTDIR = "/tmp/bench_comprehensive"
 os.makedirs(OUTDIR, exist_ok=True)
 os.makedirs(f"{OUTDIR}/screenshots", exist_ok=True)
@@ -41,8 +42,47 @@ os.makedirs(f"{OUTDIR}/screenshots", exist_ok=True)
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
+async def new_browser(pw, session_timeout: int = None, keep_alive: bool = False):
+    """
+    Returns (browser, context, session_id_or_None, label).
+
+    session_timeout: BB session lifetime in seconds (60-21600). Mapped to the
+                     `api_timeout` param of the SDK. Note: the SDK's `timeout`
+                     param is HTTP request timeout, NOT session timeout — easy
+                     to get wrong.
+    keep_alive: BB will keep session alive across CDP disconnects (paid plan only)
+    """
+    if USE_LOCAL:
+        browser = await pw.chromium.launch(headless=True)
+        ctx = await browser.new_context()
+        return browser, ctx, None, "LOCAL"
+    else:
+        from browserbase import AsyncBrowserbase
+        bb = AsyncBrowserbase(api_key=BB_API_KEY)
+        params = {"project_id": BB_PROJECT_ID}
+        if session_timeout is not None:
+            params["api_timeout"] = session_timeout  # NOTE: api_timeout, not timeout
+        if keep_alive:
+            params["keep_alive"] = True
+        session = await bb.sessions.create(**params)
+        browser = await pw.chromium.connect_over_cdp(session.connect_url)
+        ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+        return browser, ctx, session.id, "BB"
+
+
+async def release_session(session_id: str):
+    if not session_id or USE_LOCAL:
+        return
+    from browserbase import AsyncBrowserbase
+    try:
+        bb = AsyncBrowserbase(api_key=BB_API_KEY)
+        await bb.sessions.update(id=session_id, project_id=BB_PROJECT_ID, status="REQUEST_RELEASE")
+    except Exception:
+        pass
+
+
+# Keep old names as aliases for backwards compat with sections that haven't been refactored yet
 async def new_bb_session():
-    """Create a Browserbase session. Returns (session_id, connect_url)."""
     from browserbase import AsyncBrowserbase
     bb = AsyncBrowserbase(api_key=BB_API_KEY)
     session = await bb.sessions.create(project_id=BB_PROJECT_ID)
@@ -157,11 +197,9 @@ async def section_timeout(n: int = 10):
     for timeout_ms, label in [(6000, "baseline_6s"), (15000, "fixed_15s")]:
         print(f"\n  Running {n} iterations @ {timeout_ms}ms timeout...")
         for i in range(n):
-            session_id, connect_url = await new_bb_session()
             async with async_playwright() as pw:
+                browser, ctx, session_id, mode_label = await new_browser(pw)
                 try:
-                    browser = await pw.chromium.connect_over_cdp(connect_url)
-                    ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
                     page = await ctx.new_page()
                     r = await run_workflow_with_timeout(page, timeout_ms, label, i+1, n)
                     if not r["success"] and page:
@@ -174,7 +212,7 @@ async def section_timeout(n: int = 10):
                 except Exception as e:
                     print(f"    [{i+1:02d}/{n}] FATAL: {e}")
                     results[label].append({"run": i+1, "nav_timeout_ms": timeout_ms, "success": False, "error": str(e)[:200]})
-            await release_bb_session(session_id)
+            await release_session(session_id)
 
     # Summarize
     for label in ["baseline_6s", "fixed_15s"]:
@@ -203,15 +241,13 @@ async def section_retry(n: int = 10):
     for i in range(n):
         attempt_results = []
         for attempt in range(2):  # attempt 0 = initial, attempt 1 = retry
-            session_id, connect_url = await new_bb_session()
             async with async_playwright() as pw:
-                browser = await pw.chromium.connect_over_cdp(connect_url)
-                ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+                browser, ctx, session_id, _ = await new_browser(pw)
                 page = await ctx.new_page()
                 r = await run_workflow_with_timeout(page, 15000, f"retry_{attempt}", i+1, n)
                 attempt_results.append(r)
                 await browser.close()
-            await release_bb_session(session_id)
+            await release_session(session_id)
 
             if r["success"]:
                 print(f"  [{i+1:02d}/{n}] attempt {attempt+1} ✓")
@@ -271,13 +307,11 @@ async def section_popups(n: int = 10):
         else:
             npi_site = None
 
-        session_id, connect_url = await new_bb_session()
         dialog_count = 0
         modal_handled = []
 
         async with async_playwright() as pw:
-            browser = await pw.chromium.connect_over_cdp(connect_url)
-            ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+            browser, ctx, session_id, _ = await new_browser(pw)
             page = await ctx.new_page()
 
             def dialog_handler(d):
@@ -363,7 +397,7 @@ async def section_popups(n: int = 10):
             print(f"  [{i+1:02d}/{n}] {'✓' if ok else '✗'}  native={dialog_count}  modals={len(modal_handled)}")
 
             await browser.close()
-        await release_bb_session(session_id)
+        await release_session(session_id)
 
     print(f"\n  Total native dialogs: {popup_stats['native_dialog']}")
     print(f"  Total DOM error modals: {popup_stats['dom_error_modal']}")
@@ -382,12 +416,16 @@ async def section_autologout():
     print("SECTION 4: Auto-Logout Detection (5-min idle)")
     print("="*70)
 
-    session_id, connect_url = await new_bb_session()
     result = {"logged_in": False, "idle_duration_s": 0, "expired_detected": False, "final_url": None}
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.connect_over_cdp(connect_url)
-        ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+        # Use keep_alive=true so the BB session survives the idle period.
+        # Without this, BB closes the CDP connection after ~5 min of inactivity
+        # (independent of session timeout). With keep_alive, the session can be
+        # reconnected after disconnect.
+        browser, ctx, session_id, _ = await new_browser(pw, session_timeout=3600, keep_alive=True)
+        result["bb_session_id"] = session_id
+        result["bb_params"] = {"api_timeout": 3600, "keep_alive": True}
         page = await ctx.new_page()
         page.on("dialog", lambda d: asyncio.create_task(d.accept()))
         page.set_default_timeout(15000)
@@ -402,22 +440,54 @@ async def section_autologout():
             result["logged_in"] = True
             print(f"  Logged in, current URL: {page.url}")
 
-            # Idle for 5 minutes 30 seconds (PortalX TTL is 300s)
+            # Idle for 5 minutes 30 seconds (PortalX TTL is 300s).
+            # Send a CDP heartbeat (page.evaluate) every 30s to prevent the
+            # CDP WebSocket from being closed by an idle timeout. This way we
+            # actually test PortalX session expiry, not the CDP transport.
             idle_s = 330
-            print(f"  Idling for {idle_s}s...")
+            heartbeat_interval = 30
+            print(f"  Idling for {idle_s}s with {heartbeat_interval}s heartbeats...")
             t0 = time.perf_counter()
-            await asyncio.sleep(idle_s)
+            heartbeats_sent = 0
+            heartbeats_failed = 0
+            elapsed = 0
+            while elapsed < idle_s:
+                await asyncio.sleep(min(heartbeat_interval, idle_s - elapsed))
+                elapsed = time.perf_counter() - t0
+                try:
+                    # Tiny CDP roundtrip — does NOT touch PortalX, just keeps WebSocket alive
+                    await page.evaluate("1+1")
+                    heartbeats_sent += 1
+                    print(f"    [{int(elapsed)}s] heartbeat OK")
+                except Exception as e:
+                    heartbeats_failed += 1
+                    print(f"    [{int(elapsed)}s] heartbeat FAILED: {str(e)[:80]}")
+                    break
             result["idle_duration_s"] = round(time.perf_counter() - t0, 1)
+            result["heartbeats_sent"] = heartbeats_sent
+            result["heartbeats_failed"] = heartbeats_failed
 
-            print("  Attempting navigation after idle...")
+            print("  Attempting navigation after idle (fresh GET to protected page)...")
             try:
-                await page.click("button[type=submit]", timeout=5000)
-                await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                # Use page.goto() for a real server-side roundtrip — click() may be AJAX-only
+                resp = await page.goto(f"{PUBLIC_SITE}/prior-auth", wait_until="domcontentloaded", timeout=15000)
+                result["nav_status"] = resp.status if resp else None
             except Exception as e:
-                print(f"  Click/nav after idle threw: {e}")
+                print(f"  Goto after idle threw: {e}")
+                result["nav_error"] = str(e)[:200]
 
             result["final_url"] = page.url
-            result["expired_detected"] = "session-expired" in page.url or "/login" in page.url
+            result["expired_detected"] = "session-expired" in page.url or page.url.endswith("/login")
+
+            # Also probe the API for session validity
+            try:
+                api_resp = await page.evaluate("""async () => {
+                    const r = await fetch('/api/session-info');
+                    return await r.json();
+                }""")
+                result["session_info"] = api_resp
+            except Exception as e:
+                result["session_info_error"] = str(e)[:200]
             print(f"  Final URL: {page.url}")
             print(f"  Session expired detected: {result['expired_detected']}")
 
@@ -428,7 +498,7 @@ async def section_autologout():
             print(f"  Error: {e}")
 
         await browser.close()
-    await release_bb_session(session_id)
+    await release_session(session_id)
 
     with open(f"{OUTDIR}/section4_autologout.json", "w") as f:
         json.dump(result, f, indent=2)
@@ -438,20 +508,25 @@ async def section_autologout():
 # ── Section 5: Connection resilience ────────────────────────────────────────
 
 async def section_resilience():
-    """Open BB session, idle 60s/120s/180s, verify connection still alive."""
+    """
+    Open browser session, idle for increasing intervals, verify connection alive.
+    Answers the production question: how long can you wait between actions
+    in a status-check loop before the session dies?
+    """
     print("\n" + "="*70)
-    print("SECTION 5: Connection Resilience (idle mid-session)")
+    print("SECTION 5: Connection Resilience (idle without heartbeat)")
     print("="*70)
 
-    session_id, connect_url = await new_bb_session()
     result = {"tests": []}
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.connect_over_cdp(connect_url)
-        ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+        browser, ctx, session_id, _ = await new_browser(pw, session_timeout=3600, keep_alive=True)
+        result["bb_session_id"] = session_id
         page = await ctx.new_page()
 
-        for idle_s in [30, 60, 120]:
+        # Ladder of increasing idle durations — find the breaking point
+        last_ok = 0
+        for idle_s in [30, 60, 120, 240, 360, 480]:
             print(f"\n  Navigate → idle {idle_s}s → navigate again...")
             t_test = {"idle_s": idle_s, "nav1_ok": False, "nav2_ok": False, "nav2_time": None}
             try:
@@ -465,14 +540,18 @@ async def section_resilience():
                 await page.goto(f"{PUBLIC_SITE}/login", wait_until="domcontentloaded", timeout=15000)
                 t_test["nav2_time"] = round(time.perf_counter() - t_nav, 3)
                 t_test["nav2_ok"] = True
+                last_ok = idle_s
                 print(f"    Second nav after {idle_s}s idle: OK ({t_test['nav2_time']}s)")
             except Exception as e:
                 t_test["error"] = str(e)[:200]
-                print(f"    FAILED: {e}")
+                print(f"    FAILED after {idle_s}s idle: {str(e)[:100]}")
+                result["tests"].append(t_test)
+                break  # connection broken — stop laddering
             result["tests"].append(t_test)
+        result["max_idle_survived_s"] = last_ok
 
         await browser.close()
-    await release_bb_session(session_id)
+    await release_session(session_id)
 
     with open(f"{OUTDIR}/section5_resilience.json", "w") as f:
         json.dump(result, f, indent=2)
@@ -499,13 +578,15 @@ async def section_upload():
                 b"trailer<</Size 4/Root 1 0 R>>\nstartxref\n160\n%%EOF\n")
 
     results = []
-    for label, use_bb in [("LOCAL", False), ("BB", True)]:
+    # In local-only mode, skip BB entirely
+    test_modes = [("LOCAL", False)] if USE_LOCAL else [("LOCAL", False), ("BB", True)]
+    for label, use_bb in test_modes:
         print(f"\n  {label}:")
-        if use_bb:
-            session_id, connect_url = await new_bb_session()
+        session_id = None
 
         async with async_playwright() as pw:
             if use_bb:
+                session_id, connect_url = await new_bb_session()
                 browser = await pw.chromium.connect_over_cdp(connect_url)
                 ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
             else:
@@ -544,7 +625,7 @@ async def section_upload():
 
             await browser.close()
 
-        if use_bb:
+        if use_bb and session_id:
             await release_bb_session(session_id)
 
     with open(f"{OUTDIR}/section6_upload.json", "w") as f:
@@ -559,6 +640,11 @@ async def section_audit():
     print("\n" + "="*70)
     print("SECTION 7: Audit Trail Verification (Browserbase)")
     print("="*70)
+
+    if USE_LOCAL:
+        print("  USE_LOCAL=1 — this section requires Browserbase, skipping.")
+        print("  (Local audit trail = PortalX /audit page + /api/audit endpoint)")
+        return
 
     session_id, connect_url = await new_bb_session()
     print(f"  Session ID: {session_id}")
@@ -621,17 +707,15 @@ async def section_sustained(minutes: int = 10, concurrency: int = 25):
         print(f"\n  Batch {batch_num} starting ({concurrency} sessions)...")
 
         async def run_one(i):
-            session_id, connect_url = await new_bb_session()
-            try:
-                async with async_playwright() as pw:
-                    browser = await pw.chromium.connect_over_cdp(connect_url)
-                    ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+            async with async_playwright() as pw:
+                browser, ctx, session_id, _ = await new_browser(pw)
+                try:
                     page = await ctx.new_page()
                     r = await run_workflow_with_timeout(page, 15000, f"sustained_b{batch_num}", i, concurrency)
                     await browser.close()
-                return r
-            finally:
-                await release_bb_session(session_id)
+                    return r
+                finally:
+                    await release_session(session_id)
 
         results = await asyncio.gather(*[run_one(i) for i in range(concurrency)], return_exceptions=True)
         batch_time = time.perf_counter() - t_batch
