@@ -294,222 +294,291 @@ At 10x scale (~120k workflows/month), the math flips: Browserbase would need the
 
 ## Recommended Production Architecture
 
-The decision between Browserbase and self-hosted Playwright should not be a one-way door. Both have legitimate use cases — and at the level of granularity that matters (per-portal, per-client), the right answer can be different at the same time. The architecture below makes the choice a **runtime configuration**, not a code change.
+### We are not starting from scratch
 
-### Goals
+Atul's Brightree implementation in `backend-v0` (`infrastructure/rpa/`, `infrastructure/integrations/brightree/`, `domain/services/workflow_management/rpa/`) already solves most of the hard problems for a single-portal, multi-tenant RPA system. Before describing what we'd add, here's a faithful summary of what's already there and worth keeping as-is. The architectural goal is to **extend** this foundation, not replace it.
 
-1. **Backend-agnostic workflows** — the same workflow code runs against either Browserbase or local Playwright. No `if browserbase:` branches in business logic.
-2. **Per-portal and per-client routing** — the backend is selected at runtime based on which portal we're hitting and which client we're running for.
-3. **Generic error handling** — the most common failure modes (modals, dialogs, server errors, navigation timeouts, session expiry) are handled once at the framework level. Site-specific quirks are handled in portal adapters that extend or override the defaults.
-4. **First-class retry + recovery** — every workflow gets retry-on-transient and recover-on-failure for free.
+### What backend-v0 already does well
 
-### Layered architecture
+| Capability | Where it lives | What it does |
+|---|---|---|
+| **Browser backend abstraction** | `infrastructure/rpa/browser/abstract_browser.py`, `playwright.py` | `AbstractBrowser` interface; `PlaywrightBrowser` implements both local launch (`chromium.launch`) and CDP connect (`chromium.connect_over_cdp`) on the same code path. The `is_cdp_active` flag from client config picks the path at runtime. |
+| **CDP client abstraction** | `infrastructure/rpa/cdp_client/abstract_cdp_client.py`, `browserbase.py`, `factory.py` | `CDPClient` interface (`create()` / `retrieve()` / `close()` returning a `CDPSession` entity). Browserbase implementation is a thread-safe singleton wrapping the AsyncBrowserbase SDK with region-specific subdomains. Adding another CDP provider (BrowserStack, Steel Cloud, etc.) = one new file. |
+| **Database-driven routing rules** | `domain/services/workflow_management/rpa/routing_service.py`, `domain/entities/workflow_management/rpa/routing_rules.py`, `condition_evaluator.py` | `RoutingRules` are MongoDB documents with a `Condition` model (`EQ`, `NE`, `CONTAINS`, `IN`, `EXISTS`), `priority`, `evidence_steps`, `is_default`, and `integration_account_id`. `RoutingService` does a two-phase lookup (non-default by priority → default fallback → arbitrary). **Routing changes don't require a deploy.** |
+| **Distributed credential locking with pending queue** | `distributed_lock/utils.py`, `domain/services/workflow_management/rpa/task_dispatcher.py` | Per-credential locks prevent two RPA tasks from logging into the same Brightree account at the same time. If a lock is held, the new task is inserted into a `CredentialPending` queue (atomic INSERT). When the holder releases, the next pending task auto-dispatches via `release_lock_and_dispatch_next()`. Stale locks expire after 90 minutes. **This is the killer feature — no other RPA codebase I've seen handles credential contention this cleanly.** |
+| **Task registry / dispatcher** | `domain/entities/workflow_management/rpa/task_registry.py`, `task_dispatcher.py` | `RPA_REGISTRY` maps logical method keys (`brightree_intake_page`, `mycgs_eligibility_check`) to Celery tasks with `RPARegistryEntry` metadata (`requires_lock`, `evidence_steps`, `celery_task_name`). External code calls `dispatch_rpa_task("brightree_intake_page", kwargs)` and the dispatcher handles credential selection, lock acquisition, and Celery dispatch. |
+| **Session persistence (cookies)** | `domain/repositories/workflow_management/rpa/rpa_session_repository.py`, `domain/entities/workflow_management/rpa/rpa_session.py` | `RPASession(execution_context_id, browser_session_id, expires_at, cookies)`. Cookies are extracted after each browser operation. Next run for the same execution context can pass them back into `browser.launch(cookies=[...])` to skip login. Indexed on `(client_id, execution_context_id, browser_session_id)`. |
+| **Retry with relogin** | `infrastructure/integrations/brightree/intake_tasks.py:128-355`, `client.py:55-80` (`_retry_with_relogin`) | Whole-task retry up to 3 attempts. On timeout/`ServerErrorPopupDetected`, increment and retry. Per-operation `_retry_with_relogin` detects session expiration after a timeout, calls `client.login()` to refresh, and retries the operation. Non-retryable errors break the loop immediately. |
+| **Screenshot evidence as first-class artifact** | `infrastructure/integrations/brightree/client.py:178-189`, `RpaStepDetail` model | `_take_screenshot()` uploads to media service, returns metadata. Each screenshot is logged as `RpaStepDetail(name, screenshot_metadata_id, url, time, status)` and incrementally appended to the stage object. |
+| **Brightree-specific error taxonomy** | `infrastructure/integrations/brightree/exceptions.py`, `exception_handlers.py`, `error_parsing.py` | `ServerErrorPopupDetected`, `SessionExpiredDetected`, `PaginationError`, `BrightreeOperationFailure` (with subclasses like `NewOrderButtonNotActive`, `MissingRequiredData`, `ProcedureCodeNotFound`). Page-level error parsing maps API error strings to human descriptions. |
+| **Global dialog listener** | `intake_tasks.py:159-178` | A `page.on("dialog")` handler attached to every page in the browser context. Auto-accepts server errors, classifies by message content, prevents `alert()` calls from freezing the automation. |
+| **Structured logging with execution context** | structlog throughout | `logger.bind(execution_context_id=...)` carries the run ID through every log line. Lifecycle markers like `[TASK_START]`, `[TASK_RETRY]`, `[TASK_SUCCESS]`, `[TASK_CLEANUP]` make grep-debugging trivial. |
+| **Slack alerts on max-retry failures** | `intake_tasks.py:326-335`, `370-378` | Full traceback to a Slack channel on permanent failure or stale-lock cleanup. |
+
+If you're starting any new portal integration on this codebase, **don't reinvent any of the above**. They've been battle-tested in production against a real Brightree deployment.
+
+### What's missing and where we'd extend it
+
+Atul's code is excellent for "Brightree, with one or two other portals bolted on the same pattern." It starts to feel cramped if you want:
+
+1. **A generic error taxonomy that other portals can share.** Today's exceptions are Brightree-named and Brightree-specific. A new portal can't reuse `ServerErrorPopupDetected` cleanly — it has to declare its own equivalent.
+2. **A reusable `Step` abstraction.** Workflows are written as procedural functions inside `intake_tasks.py`. Each new portal duplicates the structure (login, navigate, fill, submit, screenshot) instead of composing pre-built steps.
+3. **A per-portal error override layer.** The global dialog listener is fine, but portal-specific patterns (Brightree's `xmlHttp.status: 500`, MyCGS's empty alert modals, Vuetify v-select races) live as scattered checks inside the task code. A central registry of "this portal also handles X this way" would make new portals much cheaper.
+4. **A failure bundle for post-mortem.** Today, screenshots are in media storage, logs are in CloudWatch/structlog, audit entries are in MongoDB, Slack has the traceback, and the Browserbase session replay URL is nowhere. Five places to look. A single `failures/{run_id}.{json,png}` dump that bundles all of them would save hours per incident.
+5. **Live observability links.** The Browserbase session ID is created (`CDPSession.id`) but the URL `https://www.browserbase.com/sessions/{id}` is never logged. Adding it to the structured log on session start makes "click the link to watch the failure" a one-second debugging step.
+6. **A way to flip a portal from local Playwright to Browserbase per-client.** The routing service handles *which method to call*, but not *which browser backend to use for that method*. The cleanest way to add this is one new field on the routing rule.
+
+These are all **additive** changes. None of them require touching the locking, dispatcher, session repo, or task registry — those layers are correct as-is.
+
+### The extended architecture
+
+Same shape as backend-v0 today, with the new layers shown in **bold**:
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │                        WORKFLOW DEFINITION                         │  ← portal-agnostic
 │  e.g. "look up status for patient X" — pure intent, no selectors   │     business logic
+│  (today: lives inside intake_tasks.py per portal)                  │
 └─────────────────────────────────┬──────────────────────────────────┘
                                   │
 ┌─────────────────────────────────▼──────────────────────────────────┐
-│                          PORTAL ADAPTER                            │  ← per-portal
+│                       PORTAL ADAPTER  (NEW)                        │  ← per-portal
 │  - selectors, step sequences, login flow                           │     site knowledge
-│  - site-specific error handler overrides (extends defaults)        │
-│  e.g. PortalXAdapter, BrightreeAdapter, MyCgsAdapter               │
+│  - site-specific error patterns (extends global registry)          │
+│  - optional on_failure() override for site-specific state dump     │
+│  - reuses backend-v0's BrightreeClient as the first concrete impl  │
 └─────────────────────────────────┬──────────────────────────────────┘
                                   │
 ┌─────────────────────────────────▼──────────────────────────────────┐
-│                         WORKFLOW RUNNER                            │  ← framework
+│                     WORKFLOW RUNNER  (NEW)                         │  ← framework
 │  ┌──────────────────────────────────────────────────────────────┐  │
-│  │  GLOBAL ERROR HANDLERS (run on every workflow)               │  │
-│  │  • native dialogs  → auto-accept (alert/confirm/prompt)      │  │
-│  │  • DOM modals      → dismiss (#error-modal, #alert-modal,    │  │
-│  │                       generic [role=alertdialog])            │  │
-│  │  • server errors   → retry once (transient_server)           │  │
-│  │  • nav timeouts    → retry once (transient_timeout)          │  │
-│  │  • concurrent sess → retry with fresh session                │  │
-│  │  • session expired → re-login + restart from last good step  │  │
-│  │  • selector miss   → permanent failure (after retry)         │  │
-│  │  • unknown errors  → permanent failure (after one retry)     │  │
+│  │  GLOBAL ERROR DISPATCH (generalized from intake_tasks.py)    │  │
+│  │  • native dialogs  → auto-accept  (already in backend-v0)    │  │
+│  │  • DOM modals      → dismiss known patterns (NEW: registry)  │  │
+│  │  • server errors   → classify transient_server, retry once   │  │
+│  │  • nav timeouts    → classify transient_timeout, retry once  │  │
+│  │  • concurrent sess → release session, retry with fresh one   │  │
+│  │  • session expired → re-login (today's _retry_with_relogin)  │  │
+│  │  • selector miss   → permanent_selector, fail                │  │
+│  │  • unknown errors  → retry once, then permanent              │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 │  ┌──────────────────────────────────────────────────────────────┐  │
-│  │  RECOVERY HOOK (runs before failure is reported)             │  │
-│  │  • screenshot                                                │  │
-│  │  • DOM snapshot                                              │  │
-│  │  • console + network log dump                                │  │
-│  │  • write entry to audit log                                  │  │
-│  │  • emit metric (success / retry / permanent fail by class)   │  │
+│  │  RECOVERY HOOK  (NEW: bundles existing artifacts)            │  │
+│  │  • screenshot           (already taken; just gather it)      │  │
+│  │  • DOM HTML snapshot    (NEW)                                │  │
+│  │  • last 50 console logs (NEW)                                │  │
+│  │  • last 50 network reqs (NEW)                                │  │
+│  │  • RpaStepDetail array  (already collected)                  │  │
+│  │  • Browserbase replay URL (NEW: log it)                      │  │
+│  │  • full error chain + classification                         │  │
+│  │  → write to failures/{run_id}.{json,png}                     │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │  RETRY POLICY  (generalized from intake_tasks.py)            │  │
+│  │  • transient → retry up to N (default 3) with relogin        │  │
+│  │  • permanent → fail fast, slack alert                        │  │
+│  │  • already wrapped by credential lock + pending queue        │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────┬──────────────────────────────────┘
                                   │
 ┌─────────────────────────────────▼──────────────────────────────────┐
-│                          BACKEND ROUTER                            │  ← runtime decision
-│  router.pick(portal="brightree", client="acme_dme") → backend      │     based on config
+│        TASK DISPATCHER + CREDENTIAL LOCK  (UNCHANGED)              │  ← backend-v0 today
+│  - task_registry.py   - distributed_lock/utils.py                  │
+│  - task_dispatcher.py - CredentialPending queue                    │
+│  - acquire lock or queue, release-and-dispatch-next                │
+└─────────────────────────────────┬──────────────────────────────────┘
+                                  │
+┌─────────────────────────────────▼──────────────────────────────────┐
+│        ROUTING SERVICE  (EXTEND existing routing_rules)            │  ← runtime decision
+│  RoutingRule (today: priority + condition + method)                │
+│  + new field: backend ∈ {local, browserbase}                       │
+│  + new field: client_overrides[client_id] = backend                │
+│  RoutingService.resolve(payload) → (method, backend)               │
 └──────┬──────────────────────────────────────────────┬──────────────┘
        │                                              │
 ┌──────▼─────────────┐                       ┌────────▼─────────────┐
-│  BrowserbaseBackend│                       │   LocalBackend       │
-│  - cloud Chrome    │                       │  - VM Playwright     │
-│  - distributed IPs │                       │  - single VM IP      │
-│    (built-in)      │                       │    (or residential   │
-│  - dashboard       │                       │     proxy if config) │
-│  - replay UI       │                       │  - DIY observability │
+│  CDP backend       │                       │   Local backend      │
+│  (already exists:  │                       │   (already exists:   │
+│   browserbase.py)  │                       │    PlaywrightBrowser │
+│  - cloud Chrome    │                       │    .launch())        │
+│  - distributed IPs │                       │  - VM Playwright     │
+│    (built-in)      │                       │  - single VM IP      │
+│  - dashboard       │                       │  - + residential     │
+│  - replay UI       │                       │    proxy if needed   │
 └────────────────────┘                       └──────────────────────┘
 ```
 
-Each layer has one job. The workflow doesn't know which backend it ran on. The backend doesn't know which portal it's hitting. The router doesn't know what the workflow does. Everything is composable.
+The boxes marked **NEW** are the only things we'd add. Everything else is already in `backend-v0`.
 
-### Backend routing — two equally valid options
+### Backend routing — extending the existing RoutingRule
+
+Atul's `routing_service.py` already does conditional routing by `(integration_account_id, payload)` to a `method` key. We don't need to invent a parallel routing system — we just need to add **one new field** to `RoutingRule` for the browser backend.
+
+There are two equally valid options for how to key the backend choice:
 
 | Option | Routing key | When to use |
 |--------|-------------|-------------|
-| **A. Per-portal routing** | `portal_id` only | Most teams. The backend choice is driven by what the *target portal* requires (e.g., Brightree blocks IPs → BB; MyCGS doesn't → local). All clients hitting the same portal share the same backend. |
-| **B. Per-portal + per-client routing with override** | `(portal_id, client_id)` tuple | When a specific client has constraints other clients don't (e.g., HIPAA-strict client demands data residency on our infra). Falls back to the portal default if no override is set. |
+| **A. Per-portal routing** | `portal_id` (or `integration_account_id`) only | Most teams. The backend choice is driven by what the *target portal* requires. All clients hitting the same portal share the same backend. |
+| **B. Per-portal + per-client override** | `(portal_id, client_id)` tuple | When a specific client has constraints other clients don't (e.g., HIPAA-strict client demands data residency on our infra). Falls back to the portal default if no override is set. |
 
-A YAML config example covering both styles:
+The cleanest extension to the existing schema:
 
-```yaml
-# Default backend for the whole platform
-default_backend: browserbase
+```python
+# domain/entities/workflow_management/rpa/routing_rules.py  (extended)
 
-# Per-portal defaults (Option A)
-portals:
-  brightree:
-    backend: browserbase           # IP rotation matters here
-    concurrency_limit: 10
-    api_timeout: 3600
-  mycgs:
-    backend: local                 # known to be lenient on IP
-    concurrency_limit: 5
-  availity:
-    backend: browserbase
-    concurrency_limit: 8
-  portalx:
-    backend: local                 # our test site
+class RoutingRule(BaseModel):
+    # ── existing fields ──
+    priority: int
+    condition: Condition          # the EQ/NE/CONTAINS/IN/EXISTS matcher
+    method: str                   # task_registry key
+    is_default: bool
+    integration_account_id: ObjectId
+    evidence_steps: list[str]
 
-# Per-client overrides (Option B) — overrides portal default for that client
-client_overrides:
-  acme_dme:
-    # this client demands self-hosted for compliance
-    force_backend: local
-  beta_clinic:
-    # this client is on Browserbase even for portals where we use local by default
-    portals:
-      mycgs:
-        backend: browserbase
+    # ── NEW fields ──
+    backend: Literal["local", "browserbase"] = "browserbase"      # default
+    client_overrides: dict[str, Literal["local", "browserbase"]] = {}
+    backend_config: dict = {}     # api_timeout, keep_alive, proxy_url, region, etc.
 ```
 
-The router resolves in this order: client override → portal default → global default. A single function:
+The router already does conditional matching against a payload dict. We extend it to also resolve the backend in the same call:
 
 ```
-resolve_backend(portal, client) →
-  if config.client_overrides[client].portals[portal]: use it
-  else if config.client_overrides[client].force_backend: use it
-  else if config.portals[portal].backend: use it
-  else: config.default_backend
+RoutingService.resolve(payload) →
+  rule = first matching rule (priority order, fallback to default)
+  backend = rule.client_overrides.get(payload["client_id"]) or rule.backend
+  return (rule.method, backend, rule.backend_config)
 ```
 
-This means: for 95% of cases, set the per-portal backend and forget about it. For the 5% of clients with special requirements, add an override. No code changes needed when the routing changes — just edit the YAML.
+For 95% of cases, set `backend` on the rule and forget about it. For the 5% of clients with special requirements, add an entry to `client_overrides`. **No code changes when routing changes** — and because rules are MongoDB documents, no deploy either. This is strictly better than the YAML-config approach I sketched earlier — Atul already built the better thing.
 
-### Error handling — two-level dispatch
+### Error handling — two-level dispatch on top of the existing exceptions
 
-Errors are intercepted in **two layers**:
+Today's error handling is good but Brightree-flavored. Three changes generalize it without breaking anything:
 
-**Layer 1 — Global handlers (in the runner)**
+**Change 1: Add a generic classification on top of existing exceptions**
 
-These run on every workflow regardless of which portal is being hit. They cover failure modes that look the same on every site:
+A small mapper that wraps the existing exception types in a portal-agnostic taxonomy:
 
-| Error class | Detection | Default action |
-|---|---|---|
-| `transient_timeout` | Playwright `TimeoutError` on navigation/click/wait | retry once with fresh session |
-| `transient_server` | Page contains 500/502/503 markers, or alert text matches `/server.error/i` | retry once |
-| `transient_concurrent` | URL contains `/concurrent` or matches portal's concurrent-session redirect | release session, get fresh one, retry |
-| `transient_network` | `net::ERR_*` errors | retry once |
-| `session_expired` | URL matches portal's session-expired pattern OR `/login` redirect mid-flow | re-login → resume from last completed step |
-| `permanent_selector` | Element not found after retry | fail, capture state, alert |
-| `permanent_auth` | Login attempt rejected | fail immediately, no retry |
-| `unknown` | Anything else | retry once, then fail |
+| Generic class | Maps from (existing) |
+|---|---|
+| `transient_timeout` | `PlaywrightTimeoutError`, `TimeoutError` |
+| `transient_server` | `ServerErrorPopupDetected` (Brightree), `MyCgsServerError` (future), generic `[role=alert][text*=server.error]` match |
+| `transient_concurrent` | new — URL match `/concurrent` or portal-specific equivalent |
+| `transient_network` | `net::ERR_*` errors |
+| `session_expired` | `SessionExpiredDetected` (Brightree), generic `/login` redirect mid-flow |
+| `permanent_selector` | `Locator.wait_for: ...` after retry exhausted |
+| `permanent_auth` | login attempt rejected (no retry) |
+| `permanent_data` | `MissingRequiredData`, `ProcedureCodeNotFound`, `NoItemsToPurchase`, `InsurancePayPctZero` (Brightree-specific subclasses of `BrightreeOperationFailure`) |
+| `unknown` | anything else — retry once then permanent |
 
-The runner also auto-installs:
-- A `page.on("dialog")` handler that accepts native `alert()`, `confirm()`, `prompt()` so they don't freeze the browser
-- A periodic check for known DOM modal patterns (`#error-modal.active`, `[role=alertdialog]`, `.modal.show`) that dismisses them if found
+The runner uses this taxonomy to decide retry vs fail. The portal-specific exception types stay where they are; we just add a small `classify(exc) -> ErrorClass` function.
 
-These handlers cover ~80% of real-world RPA failures across any portal. They're written **once** in the runner and inherited by every workflow.
+**Change 2: A portal-level error pattern registry**
 
-**Layer 2 — Portal-specific overrides (in portal adapters)**
+Each portal adapter can register additional patterns the global handler should look for on every page interaction:
 
-A portal adapter can:
-- **Add** a handler for a pattern unique to that site (e.g., Brightree's `xmlHttp.status: 500` JS alert with a specific button to click)
-- **Override** a default handler for that portal only (e.g., MyCGS uses a non-standard session-expired redirect that needs custom detection)
-- **Extend** the recovery hook with site-specific data capture (e.g., dump Vuetify component state)
-
-A portal adapter is roughly:
-
-```
+```python
 class PortalXAdapter(PortalAdapter):
-    base_url = "https://portalx-7nn4.onrender.com"
-
-    custom_error_patterns = [
-        # only this site uses these — augments the global list
+    error_patterns = [
         ErrorPattern(
             name="portalx_concurrent",
-            url_match="/concurrent",
-            classification="transient_concurrent",
+            match=lambda page: "/concurrent" in page.url,
+            classify="transient_concurrent",
+        ),
+        ErrorPattern(
+            name="portalx_dom_error_modal",
+            match=lambda page: page.locator("#error-modal.active").count() > 0,
+            classify="transient_server",
+            recover=lambda page: page.locator("#error-modal.active .modal-ok").click(),
         ),
     ]
 
-    async def login(self, page, credentials): ...
-    async def navigate_to(self, page, intent): ...
-    async def submit_prior_auth(self, page, data): ...
-    async def lookup_status(self, page, ref_id): ...
-
-    # Optional: override default recovery
-    async def on_failure(self, page, error_class):
-        await super().on_failure(page, error_class)
-        # also dump portal-specific state
+    # Optional: override the runner's default recovery
+    async def on_failure(self, page, error_class, run_id):
+        await super().on_failure(page, error_class, run_id)
+        # also dump portal-specific state into the failure bundle
         await page.evaluate("window.__VUE_APP__?.$store?.state")
 ```
 
-Adding a new portal = subclass `PortalAdapter`, fill in the selectors and step sequences, optionally add custom error patterns. Workflow code never changes.
+The global handler walks `runner.global_patterns + adapter.error_patterns` on every check. **Adding a new portal = subclass `PortalAdapter`, fill in the patterns, the runner does the rest.** The patterns live next to the portal-specific code so they're discoverable.
 
-### Recovery hook
+**Change 3: Extract the global dialog listener from `intake_tasks.py:159-178`** into the runner as a default behavior on every browser session, regardless of portal. Today it's installed inside Brightree task code; in the new shape, every workflow gets it for free.
 
-Every failure (after retry has been exhausted, but before throwing) goes through a **recovery hook** that captures everything needed for post-mortem in one place:
+### Recovery hook — bundling what already exists
 
-1. Screenshot of the current page
-2. DOM HTML snapshot
-3. Last 50 console logs
-4. Last 50 network requests with status codes
-5. The full error chain + classification
-6. The portal, client, workflow, step name, and run ID
-7. Browserbase session replay URL (if backend == BB)
-8. Audit log entries from PortalX `/api/audit` (if available)
+The recovery hook isn't doing anything new; it's just **gathering scattered artifacts into one bundle** so engineers don't have to look in five places after a failure:
 
-All of this gets written to a single `failures/{run_id}.json` + `failures/{run_id}.png` so an engineer (or AI agent) can debug a failed run from one bundle.
+| Already exists (where) | The hook just collects it |
+|---|---|
+| Screenshot | `_take_screenshot()` in `client.py:178-189` |
+| `RpaStepDetail` array | already in stage object |
+| Audit / event log | already dispatched via `dispatch_stage_event()` |
+| Slack traceback | already sent on permanent failure |
+| Browserbase session ID | already in `CDPSession.id`, just never *logged as a URL* |
+| Structured logs | already in structlog with `execution_context_id` bind |
 
-This hook is implemented **once** in the runner and runs identically regardless of backend. It's the layer that gives us "observability when RPAs break" — we already have the screenshot piece working in `bench_comprehensive.py`; the rest is straightforward.
+The new bits (DOM snapshot, console log, network log) are 5-10 lines of Playwright API calls. The whole hook is maybe 80-100 LOC.
 
-### Retry semantics
+```
+on_failure(run_id, error_class, page, adapter):
+  bundle = {
+    "run_id": run_id,
+    "portal": adapter.name,
+    "client": current_client_id,
+    "error_class": error_class,
+    "error_chain": serialize_exception_chain(),
+    "url": page.url,
+    "rpa_steps": current_stage.rpa_steps,                        # already exists
+    "browserbase_replay": f"https://www.browserbase.com/sessions/{cdp_session.id}"
+                          if cdp_session else None,              # NEW: just log it
+    "console": console_buffer[-50:],                             # NEW
+    "network": network_buffer[-50:],                             # NEW
+    "dom_html": await page.content(),                            # NEW
+  }
+  write(f"failures/{run_id}.json", bundle)
+  await page.screenshot(path=f"failures/{run_id}.png")           # already taken; just save
+  await adapter.on_failure(page, error_class, run_id)            # portal hook
+  emit_metric(...)
+```
 
-The runner's default retry policy:
+This is the layer that gives us "observability when RPAs break" — exactly the dimension that matters most for production debugging.
 
-- **Transient** errors → retry once with a **fresh** session (new browser context)
-- **Permanent** errors → fail immediately, no retry
-- **Unknown** errors → retry once, then treat as permanent
-- A workflow can override this per-step if needed (e.g., "retry MFA up to 3 times because TOTP boundary races")
+### Retry semantics — generalize what's already in `intake_tasks.py`
 
-The retry happens at the **workflow level**, not at the step level by default. Step-level retry tends to cause weird mid-workflow state where you've half-submitted a form. Restarting the whole workflow with a fresh session is almost always the safer recovery, and at our latency budget it's affordable.
+The retry policy in `intake_tasks.py:128-355` is the right shape. Just lift it out of Brightree-specific code into the runner so every portal inherits it:
+
+- **Transient** (`transient_*` classes) → retry up to 3 times with `_retry_with_relogin` semantics (refresh session if session expired, otherwise just retry the failing op)
+- **Permanent** (`permanent_*` classes) → fail immediately, no retry, slack alert
+- **Unknown** → retry once, then treat as permanent
+- A workflow can override the count per-step (Brightree's MFA already does this implicitly with the relogin loop)
+
+Retry is wrapped by the credential lock — so a retry can't accidentally create a second concurrent login. **This is already true in `backend-v0`.** We just keep it.
 
 ### What this buys us
 
-- **One config flag flips a portal between BB and self-hosted.** No code change. No deploy. Edit YAML, restart runner.
-- **One client can run on a different backend than the rest.** Compliance overrides are routine.
-- **Adding a new portal = one new file** (the adapter). Existing global error handling, retry, and recovery just work.
-- **Fixing a common error fixes it for every portal.** Add a new pattern to the global handler list once.
-- **Migration from BB to self-hosted (or back) is a 30-second config change**, not a refactor.
-- **The 7 things we already validated** (retry, popups, autologout, idle resilience, file upload, audit, screenshots) all become first-class framework features instead of one-off helpers.
+- **One field on a routing rule flips a portal between BB and self-hosted.** No code change. No deploy. Update the MongoDB document.
+- **One client can run on a different backend than the rest** via `client_overrides`. Compliance overrides are a one-line config update.
+- **Adding a new portal = one new `PortalAdapter` subclass** + a routing rule. Existing locking, dispatching, retry, and recovery just work.
+- **Fixing a common error fixes it for every portal.** Add a pattern to the global registry once.
+- **Migration from BB to self-hosted (or back) is a routing-rule update**, not a refactor.
+- **The 7 things we validated** (retry, popups, autologout, idle resilience, file upload, audit, screenshots) all become first-class framework features instead of one-off helpers.
+- **Atul's locking + queue + session repo + task registry stay exactly as they are.** We're adding three new abstractions (`PortalAdapter`, `WorkflowRunner`, error taxonomy) and one field on `RoutingRule`. That's it.
 
-The architecture is deliberately **boring**. There's no clever DI container, no plugin registry, no event bus. Three classes (`PortalAdapter`, `WorkflowRunner`, `BrowserBackend`) and a YAML file. Anyone on the team can read it in 10 minutes and add a new portal in an afternoon.
+The architecture is deliberately **boring**. There's no clever DI container, no plugin registry, no event bus. The new code on top of `backend-v0` is a few hundred lines: `PortalAdapter` base class, `WorkflowRunner` with the dispatch loop, error classifier, recovery hook, and one schema migration on `RoutingRule`. Anyone on the team can read it in 20 minutes — and most of what they're reading is already familiar code from `backend-v0`.
+
+### Concrete next steps if we adopt this
+
+1. **Add `backend` field to `RoutingRule`** (+ schema migration, + default `browserbase`).
+2. **Lift the global dialog listener** out of `intake_tasks.py` into a `WorkflowRunner.attach_default_handlers(page)` method.
+3. **Write `errors.py`** with the generic taxonomy + `classify(exc)` mapper from existing Brightree exceptions.
+4. **Extract `_retry_with_relogin`** from `client.py` into the runner as `RetryPolicy.transient`.
+5. **Subclass `PortalAdapter` for Brightree** — wrap `BrightreeClient` as the first concrete adapter. Move site-specific error patterns into `BrightreeAdapter.error_patterns`. **Zero changes to `BrightreeClient` itself.**
+6. **Build `PortalXAdapter`** as the second adapter, validating the abstraction works for a different portal.
+7. **Implement the recovery hook** — bundle screenshot + RpaStepDetail + console + network + BB replay URL into `failures/{run_id}.{json,png}`.
+8. **Log the Browserbase session URL** on session creation in `playwright.py:65-72`. One line change, biggest debugging win per LOC in the whole project.
+
+None of these break existing Brightree workflows. They're all additive. Step 1 alone is enough to start running per-portal A/B tests of BB vs self-hosted on the same code path.
 
 ---
 
